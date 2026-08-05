@@ -14,7 +14,6 @@ on:
   workflow_dispatch:
 
 permissions:
-  actions: write
   contents: write
 
 concurrency:
@@ -72,11 +71,6 @@ jobs:
           if [ "$needs_publish" = false ]; then
             echo "$tag is already complete; nothing to republish."
           fi
-
-      - name: Remove obsolete private-era workflow run
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh api --method DELETE "/repos/${GITHUB_REPOSITORY}/actions/runs/30933934676"
 
       - name: Install dependencies
         if: steps.release.outputs.needs_publish == 'true'
