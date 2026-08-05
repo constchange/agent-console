@@ -8,7 +8,7 @@ Agent Console 是运行在 Linux Mint 上的本地 AI Team 控制中心。它不
 
 - Settings 内置应用更新中心：自动或手动检查新版，显示更新说明与下载进度，下载完成后可直接重启并安装。
 - AppImage 与 deb 都支持应用内更新；AppImage 直接自我替换，deb 安装时由 Linux 弹出系统授权窗口。
-- 每次新版本标签都会触发 GitHub 自动测试、打包并发布 AppImage、deb 与更新元数据。
+- 主分支中的版本号或发布说明更新后，GitHub 会自动测试、打包并发布 AppImage、deb 与更新元数据；版本标签仍可用于重新触发核验。
 - 默认采用象牙白、海军蓝、金色的明亮高对比主题。
 - Settings 可将整个界面字号从 5 px 调到 50 px；默认 25 px，调节时实时预览并自动保存。
 - 高分屏缩放由 Electron 原生处理，避免整页 CSS 缩放造成浮层与鼠标命中位置短暂错位。
@@ -146,7 +146,7 @@ npm run build           # 生产构建
 npm run test:project-edit-visual # 真实删除 Agent 后立即编辑 Project，并跨扫描/缩放反复输入的回归检查
 npm run dev             # 开发运行
 npm run package:linux   # 生成 AppImage 与 deb
-npm run release:linux   # 测试、构建并发布 GitHub Release（仅发布流程使用）
+npm run release:linux   # 测试、构建并发布 GitHub Release（需要发布权限时使用）
 ```
 
 主要结构：
