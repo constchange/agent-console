@@ -2,8 +2,16 @@ name: Publish Linux release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
+    paths:
+      - package.json
+      - package-lock.json
+      - release-notes.md
+      - .github/workflows/release.yml
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -19,6 +27,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Use Node.js 22
         uses: actions/setup-node@v4
@@ -26,34 +36,99 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Confirm tag and application version match
+      - name: Resolve release version
+        id: release
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           package_version="$(node -p "require('./package.json').version")"
-          tag_version="${GITHUB_REF_NAME#v}"
-          if [ "$package_version" != "$tag_version" ]; then
-            echo "package.json is $package_version but the tag is $tag_version"
+          tag="v${package_version}"
+
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "$tag" ]; then
+            echo "package.json is $package_version but the tag is $GITHUB_REF_NAME"
             exit 1
           fi
 
+          required_assets=(
+            "Agent-Console-${package_version}-x86_64.AppImage"
+            "Agent-Console-${package_version}-amd64.deb"
+            "latest-linux.yml"
+            "Agent-Console-${package_version}-SHA256SUMS.txt"
+          )
+          published_assets="$(gh release view "$tag" --json assets --jq '.assets[].name' 2>/dev/null || true)"
+          needs_publish=false
+          for asset in "${required_assets[@]}"; do
+            if ! grep -Fxq "$asset" <<< "$published_assets"; then
+              needs_publish=true
+            fi
+          done
+
+          echo "version=$package_version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "needs_publish=$needs_publish" >> "$GITHUB_OUTPUT"
+
+          if [ "$needs_publish" = false ]; then
+            echo "$tag is already complete; nothing to republish."
+          fi
+
       - name: Install dependencies
+        if: steps.release.outputs.needs_publish == 'true'
         run: npm ci
 
       - name: Build and run real Electron deletion regression
+        if: steps.release.outputs.needs_publish == 'true'
         run: |
           npm run build
           xvfb-run -a npm run test:project-edit-visual
 
-      - name: Test, build, and publish AppImage and deb
-        run: npm run release:linux
+      - name: Test and package AppImage and deb
+        if: steps.release.outputs.needs_publish == 'true'
+        run: |
+          npm test
+          npm run typecheck
+          npm run package:linux
+
+      - name: Create or repair the GitHub release
+        if: steps.release.outputs.needs_publish == 'true'
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Publish SHA-256 checksums
-        shell: bash
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
           cd release
-          sha256sum Agent-Console-*.AppImage Agent-Console-*.deb latest-linux.yml > Agent-Console-${GITHUB_REF_NAME#v}-SHA256SUMS.txt
-          gh release upload "$GITHUB_REF_NAME" "Agent-Console-${GITHUB_REF_NAME#v}-SHA256SUMS.txt" --clobber
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          checksum_file="Agent-Console-${RELEASE_VERSION}-SHA256SUMS.txt"
+          sha256sum \
+            "Agent-Console-${RELEASE_VERSION}-x86_64.AppImage" \
+            "Agent-Console-${RELEASE_VERSION}-amd64.deb" \
+            latest-linux.yml > "$checksum_file"
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" \
+              --title "Agent Console ${RELEASE_TAG}" \
+              --notes-file ../release-notes.md \
+              --draft=false \
+              --prerelease=false
+          else
+            gh release create "$RELEASE_TAG" \
+              --target "$GITHUB_SHA" \
+              --title "Agent Console ${RELEASE_TAG}" \
+              --notes-file ../release-notes.md
+          fi
+
+          gh release upload "$RELEASE_TAG" \
+            "Agent-Console-${RELEASE_VERSION}-x86_64.AppImage" \
+            "Agent-Console-${RELEASE_VERSION}-amd64.deb" \
+            latest-linux.yml \
+            "$checksum_file" \
+            --clobber
+
+          published_assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
+          for asset in \
+            "Agent-Console-${RELEASE_VERSION}-x86_64.AppImage" \
+            "Agent-Console-${RELEASE_VERSION}-amd64.deb" \
+            latest-linux.yml \
+            "$checksum_file"; do
+            grep -Fxq "$asset" <<< "$published_assets"
+          done
