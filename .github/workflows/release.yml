@@ -1,0 +1,59 @@
+name: Publish Linux release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-console-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Confirm tag and application version match
+        shell: bash
+        run: |
+          package_version="$(node -p "require('./package.json').version")"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$package_version" != "$tag_version" ]; then
+            echo "package.json is $package_version but the tag is $tag_version"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and run real Electron deletion regression
+        run: |
+          npm run build
+          xvfb-run -a npm run test:project-edit-visual
+
+      - name: Test, build, and publish AppImage and deb
+        run: npm run release:linux
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish SHA-256 checksums
+        shell: bash
+        run: |
+          cd release
+          sha256sum Agent-Console-*.AppImage Agent-Console-*.deb latest-linux.yml > Agent-Console-${GITHUB_REF_NAME#v}-SHA256SUMS.txt
+          gh release upload "$GITHUB_REF_NAME" "Agent-Console-${GITHUB_REF_NAME#v}-SHA256SUMS.txt" --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

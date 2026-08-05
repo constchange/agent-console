@@ -1,0 +1,90 @@
+{
+  "name": "agent-console",
+  "version": "0.3.1",
+  "description": "A local mission control dashboard for Codex CLI, tmux, terminals, backends and workers.",
+  "homepage": "https://github.com/constchange/agent-console",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/constchange/agent-console.git"
+  },
+  "desktopName": "agent-console.desktop",
+  "main": "dist/electron/electron/main.js",
+  "type": "commonjs",
+  "author": "Agent Console",
+  "license": "MIT",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
+    "dev:renderer": "vite --host 127.0.0.1",
+    "dev:electron": "tsc -p tsconfig.electron.json --watch --preserveWatchOutput & wait-on tcp:5173 file:dist/electron/electron/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json --noEmit",
+    "build:renderer": "vite build",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "build": "npm run build:renderer && npm run build:electron",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:project-edit-visual": "node scripts/visual-check-project-edit.mjs",
+    "test:update-visual": "npm run build && electron --no-sandbox --ozone-platform=headless --disable-gpu scripts/visual-check-updates.cjs",
+    "package:linux": "npm run build && electron-builder --linux AppImage deb --publish never",
+    "release:linux": "npm test && npm run typecheck && npm run build && electron-builder --linux AppImage deb --publish always",
+    "package:dir": "npm run build && electron-builder --dir"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "^5.2.8",
+    "electron-updater": "^6.8.9",
+    "lucide-react": "^0.536.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "concurrently": "^9.2.0",
+    "cross-env": "^10.0.0",
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.0",
+    "playwright-core": "^1.61.1",
+    "typescript": "^7.0.0",
+    "vite": "^8.2.0",
+    "vitest": "^4.0.0",
+    "wait-on": "^9.0.0"
+  },
+  "build": {
+    "appId": "com.agentconsole.missioncontrol",
+    "productName": "Agent Console",
+    "asar": true,
+    "electronDist": "node_modules/electron/dist",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "constchange",
+        "repo": "agent-console",
+        "private": false,
+        "releaseType": "release"
+      }
+    ],
+    "releaseInfo": {
+      "releaseNotesFile": "release-notes.md"
+    },
+    "linux": {
+      "icon": "resources/icon.png",
+      "category": "Utility",
+      "maintainer": "Agent Console Team <79825496+constchange@users.noreply.github.com>",
+      "vendor": "Agent Console Team",
+      "syncDesktopName": true,
+      "artifactName": "Agent-Console-${version}-${arch}.${ext}",
+      "target": [
+        "AppImage",
+        "deb"
+      ]
+    }
+  }
+}
