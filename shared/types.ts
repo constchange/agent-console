@@ -215,16 +215,79 @@ export interface UpdateState {
 
 export interface BootstrapData {
   state: ConsoleState
+  stateRevision: string
   snapshot: RuntimeSnapshot
   appVersion: string
   updateState: UpdateState
   stateNotice: string | null
+  core: CoreHealth
 }
 
 export interface ActionResult {
   ok: boolean
   action: string
   message: string
+}
+
+export type CoreConnectionPhase = 'starting' | 'connected' | 'reconnecting' | 'offline' | 'incompatible'
+
+export interface CoreHealth {
+  appVersion: string
+  protocolVersion: number
+  startedAt: string
+  pid: number
+  transport: 'unix'
+  stateRevision: string
+  structuredCodex: 'deferred' | 'unavailable'
+  tcpListening: false
+}
+
+export interface CoreConnectionState {
+  phase: CoreConnectionPhase
+  message: string
+  coreVersion: string | null
+  protocolVersion: number | null
+}
+
+export type CoreTaskStatus =
+  | 'starting'
+  | 'running'
+  | 'needs_input'
+  | 'needs_approval'
+  | 'completed'
+  | 'failed'
+  | 'interrupted'
+  | 'recovering'
+  | 'unknown'
+
+export interface CoreTaskRecord {
+  id: string
+  agentId: string
+  adapter: 'codex-structured' | 'tmux-compatibility' | 'process-monitor'
+  status: CoreTaskStatus
+  summary: string
+  createdAt: string
+  updatedAt: string
+  version: number
+  active: boolean
+}
+
+/** A deliberately redacted view reserved for a future authenticated Gateway. */
+export interface RemoteAgentView {
+  id: string
+  projectId: string
+  name: string
+  emoji: string
+  color: string
+  kind: AgentKind
+  status: AgentStatus
+  updatedAt: string
+  taskId: string | null
+}
+
+export interface RemoteSafeSnapshot {
+  capturedAt: string
+  agents: RemoteAgentView[]
 }
 
 export interface AgentConsoleApi {
@@ -242,4 +305,7 @@ export interface AgentConsoleApi {
   installUpdate: () => Promise<ActionResult>
   openReleasesPage: () => Promise<void>
   onUpdateState: (callback: (state: UpdateState) => void) => () => void
+  getCoreHealth: () => Promise<CoreHealth>
+  acknowledgeCoreState: (stateRevision: string) => Promise<void>
+  onCoreConnection: (callback: (state: CoreConnectionState) => void) => () => void
 }

@@ -7,6 +7,12 @@ on:
     tags:
       - 'v*'
     paths:
+      - core/**
+      - electron/**
+      - shared/**
+      - src/**
+      - scripts/verify-packaged-core.mjs
+      - scripts/verify-systemd-core.mjs
       - package.json
       - package-lock.json
       - release-notes.md
@@ -57,6 +63,11 @@ jobs:
             "Agent-Console-${package_version}-SHA256SUMS.txt"
           )
           published_assets="$(gh release view "$tag" --json assets --jq '.assets[].name' 2>/dev/null || true)"
+          existing_tag_commit="$(git rev-list -n 1 "$tag" 2>/dev/null || true)"
+          if [ -n "$existing_tag_commit" ] && [ "$existing_tag_commit" != "$GITHUB_SHA" ]; then
+            echo "$tag already points to $existing_tag_commit, but main is $GITHUB_SHA. Bump package.json before publishing changed application code."
+            exit 1
+          fi
           needs_publish=false
           for asset in "${required_assets[@]}"; do
             if ! grep -Fxq "$asset" <<< "$published_assets"; then
@@ -88,6 +99,44 @@ jobs:
           npm test
           npm run typecheck
           npm run package:linux
+
+      - name: Install deb and locate the system executable
+        if: steps.release.outputs.needs_publish == 'true'
+        id: installed_deb
+        shell: bash
+        run: |
+          deb_path="release/Agent-Console-${{ steps.release.outputs.version }}-amd64.deb"
+          package_name="$(dpkg-deb --field "$deb_path" Package)"
+          sudo apt-get install -y tmux "./$deb_path"
+          installed_executable="$(dpkg-query -L "$package_name" | grep '/agent-console$' | head -n 1)"
+          test -n "$installed_executable"
+          test -x "$installed_executable"
+          echo "executable=$installed_executable" >> "$GITHUB_OUTPUT"
+
+      - name: Verify installed packages, persistent Core, and network boundary
+        if: steps.release.outputs.needs_publish == 'true'
+        run: xvfb-run -a npm run test:packaged-core -- release "${{ steps.installed_deb.outputs.executable }}"
+
+      - name: Start a real user systemd manager
+        if: steps.release.outputs.needs_publish == 'true'
+        shell: bash
+        run: |
+          user_id="$(id -u)"
+          runtime_dir="/run/user/${user_id}"
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user-runtime-dir@${user_id}.service"
+          sudo systemctl start "user@${user_id}.service"
+          test -S "${runtime_dir}/bus"
+          echo "XDG_RUNTIME_DIR=${runtime_dir}" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=${runtime_dir}/bus" >> "$GITHUB_ENV"
+          export XDG_RUNTIME_DIR="$runtime_dir"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=${runtime_dir}/bus"
+          systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY
+          systemctl --user show-environment >/dev/null
+
+      - name: Verify real systemd user start, restart, and tmux continuity
+        if: steps.release.outputs.needs_publish == 'true'
+        run: node scripts/verify-systemd-core.mjs "${{ steps.installed_deb.outputs.executable }}"
 
       - name: Create or repair the GitHub release
         if: steps.release.outputs.needs_publish == 'true'

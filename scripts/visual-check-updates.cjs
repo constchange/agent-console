@@ -50,7 +50,7 @@ app.whenReady().then(async () => {
     }
   })()`)
 
-  if (result.heading !== 'Version 0.3.2 is available' || !result.downloadButton || !result.releaseNotes || !result.modalVisible) {
+  if (result.heading !== 'Version 0.4.1 is available' || !result.downloadButton || !result.releaseNotes || !result.modalVisible) {
     throw new Error(`Update Center visual check failed: ${JSON.stringify(result)}`)
   }
 

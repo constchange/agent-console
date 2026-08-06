@@ -20,6 +20,9 @@ import type {
   AgentKind,
   AgentStatus,
   ConsoleSettings,
+  CoreConnectionPhase,
+  CoreConnectionState,
+  CoreHealth,
   Project,
   TerminalApp,
   UpdateState,
@@ -264,6 +267,8 @@ interface SettingsEditorProps {
   settings: ConsoleSettings
   availableTerminals: TerminalApp[]
   updateState: UpdateState
+  coreHealth: CoreHealth
+  coreConnection: CoreConnectionState
   onSave: (settings: ConsoleSettings) => void
   onPreview: (settings: ConsoleSettings) => void
   onClose: () => void
@@ -271,6 +276,14 @@ interface SettingsEditorProps {
   onDownloadUpdate: () => void
   onInstallUpdate: () => void
   onOpenReleasesPage: () => void
+}
+
+const CORE_CONNECTION_LABELS: Record<CoreConnectionPhase, string> = {
+  starting: 'Starting',
+  connected: 'Connected',
+  reconnecting: 'Reconnecting',
+  offline: 'Offline',
+  incompatible: 'Version mismatch',
 }
 
 function formatBytes(value: number): string {
@@ -298,6 +311,8 @@ export function SettingsEditor({
   settings,
   availableTerminals,
   updateState,
+  coreHealth,
+  coreConnection,
   onSave,
   onPreview,
   onClose,
@@ -323,6 +338,27 @@ export function SettingsEditor({
   return (
     <Modal title="Console Settings" subtitle="Make Mission Control comfortable on your screen." onClose={onClose} size="large">
       <form className="editor-form settings-editor settings-editor--expanded" onSubmit={(event) => { event.preventDefault(); onSave(draft) }}>
+        <section className="settings-section settings-section--core">
+          <header className="settings-section__header">
+            <span><ShieldCheck size={17} /></span>
+            <div><strong>Local Console Core</strong><small>The protected background service that owns local state and Agent monitoring.</small></div>
+          </header>
+
+          <div className={`local-core-panel local-core-panel--${coreConnection.phase}`}>
+            <div className="local-core-panel__summary" aria-live="polite">
+              <span><i /><strong>{CORE_CONNECTION_LABELS[coreConnection.phase]}</strong></span>
+              <small>{coreConnection.message}</small>
+            </div>
+            <div className="local-core-detail-grid">
+              <div><small>Transport</small><strong>Unix socket</strong></div>
+              <div><small>Network</small><strong>{coreHealth.tcpListening ? 'TCP active' : 'No TCP listener'}</strong></div>
+              <div><small>Core version</small><strong>v{coreHealth.appVersion}</strong></div>
+              <div><small>Protocol</small><strong>v{coreHealth.protocolVersion}</strong></div>
+            </div>
+            <p><ShieldCheck size={13} /> Local-only mode: the socket is restricted to your Linux user and the Core does not listen on a network port.</p>
+          </div>
+        </section>
+
         <section className="settings-section settings-section--updates">
           <header className="settings-section__header">
             <span><Rocket size={17} /></span>

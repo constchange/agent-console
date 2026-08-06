@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ProcessInfo } from '../shared/types'
-import { classifyProcess, inferStatus } from '../electron/services/classification'
-import { parsePsOutput, parseTmuxOutput } from '../electron/services/process-monitor'
+import { classifyProcess, inferStatus } from '../core/services/classification'
+import { parsePsOutput, parseTmuxOutput } from '../core/services/process-monitor'
 
 const processInfo = (overrides: Partial<ProcessInfo> = {}): ProcessInfo => ({
   pid: 1200,

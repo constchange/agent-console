@@ -1,6 +1,6 @@
 {
   "name": "agent-console",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "A local mission control dashboard for Codex CLI, tmux, terminals, backends and workers.",
   "homepage": "https://github.com/constchange/agent-console",
   "repository": {
@@ -24,6 +24,7 @@
     "test:watch": "vitest",
     "test:project-edit-visual": "node scripts/visual-check-project-edit.mjs",
     "test:update-visual": "npm run build && electron --no-sandbox --ozone-platform=headless --disable-gpu scripts/visual-check-updates.cjs",
+    "test:packaged-core": "node scripts/verify-packaged-core.mjs",
     "package:linux": "npm run build && electron-builder --linux AppImage deb --publish never",
     "release:linux": "npm test && npm run typecheck && npm run build && electron-builder --linux AppImage deb --publish always",
     "package:dir": "npm run build && electron-builder --dir"
@@ -75,6 +76,7 @@
       "releaseNotesFile": "release-notes.md"
     },
     "linux": {
+      "executableName": "agent-console",
       "icon": "resources/icon.png",
       "category": "Utility",
       "maintainer": "Agent Console Team <79825496+constchange@users.noreply.github.com>",

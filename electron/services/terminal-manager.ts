@@ -126,8 +126,6 @@ export class TerminalManager {
 
     let terminalCommand: string
     if (agent.tmuxSession) {
-      const ensured = await this.ensureTmuxSession(agent)
-      if (!ensured.ok) return ensured
       terminalCommand = `exec tmux attach-session -t ${shellQuote(agent.tmuxSession)}`
     } else {
       const cwd = agent.cwd || os.homedir()
@@ -173,39 +171,6 @@ export class TerminalManager {
     } catch {
       this.knownOpenTitles.delete(title)
       return { ok: false, action: 'not-found', message: `${agent.name} terminal window was not found` }
-    }
-  }
-
-  async ensureTmuxSession(agent: AgentConfig): Promise<ActionResult> {
-    const capabilities = await this.getCapabilities()
-    if (!capabilities.tmux) {
-      return { ok: false, action: 'unavailable', message: 'This Agent uses tmux, but tmux is not installed.' }
-    }
-    if (!/^[a-zA-Z0-9_.-]{1,80}$/.test(agent.tmuxSession)) {
-      return { ok: false, action: 'invalid', message: 'tmux session names may only use letters, numbers, dot, dash, and underscore.' }
-    }
-    try {
-      await execFileAsync('tmux', ['has-session', '-t', agent.tmuxSession], { timeout: 1_500 })
-      return { ok: true, action: 'exists', message: `${agent.tmuxSession} is already running` }
-    } catch {
-      // Session does not exist yet.
-    }
-
-    try {
-      const args = ['new-session', '-d', '-s', agent.tmuxSession, '-c', agent.cwd || os.homedir()]
-      if (agent.command.trim()) {
-        const shell = process.env.SHELL || '/bin/bash'
-        const keepOpenCommand = `${agent.command}; exec ${shellQuote(shell)}`
-        args.push(`${shellQuote(shell)} -lc ${shellQuote(keepOpenCommand)}`)
-      }
-      await execFileAsync('tmux', args, { timeout: 4_000 })
-      const title = windowTitle(agent)
-      await execFileAsync('tmux', ['rename-window', '-t', agent.tmuxSession, safeTitle(agent.name)], { timeout: 1_500 }).catch(() => undefined)
-      await execFileAsync('tmux', ['set-option', '-t', agent.tmuxSession, 'set-titles', 'on'], { timeout: 1_500 }).catch(() => undefined)
-      await execFileAsync('tmux', ['set-option', '-t', agent.tmuxSession, 'set-titles-string', title], { timeout: 1_500 }).catch(() => undefined)
-      return { ok: true, action: 'created', message: `${agent.tmuxSession} started` }
-    } catch (error) {
-      return { ok: false, action: 'error', message: error instanceof Error ? error.message : String(error) }
     }
   }
 

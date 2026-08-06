@@ -1,5 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AgentConsoleApi, ConsoleState, RuntimeSnapshot, UpdateState } from '../shared/types'
+import type {
+  AgentConsoleApi,
+  ConsoleState,
+  CoreConnectionState,
+  RuntimeSnapshot,
+  UpdateState,
+} from '../shared/types'
 
 const api: AgentConsoleApi = {
   getBootstrap: () => ipcRenderer.invoke('bootstrap:get'),
@@ -23,6 +29,13 @@ const api: AgentConsoleApi = {
     const listener = (_event: Electron.IpcRendererEvent, state: UpdateState) => callback(state)
     ipcRenderer.on('update:state', listener)
     return () => ipcRenderer.removeListener('update:state', listener)
+  },
+  getCoreHealth: () => ipcRenderer.invoke('core:get-health'),
+  acknowledgeCoreState: (stateRevision: string) => ipcRenderer.invoke('core:ack-bootstrap', stateRevision),
+  onCoreConnection: (callback: (state: CoreConnectionState) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: CoreConnectionState) => callback(state)
+    ipcRenderer.on('core:connection', listener)
+    return () => ipcRenderer.removeListener('core:connection', listener)
   },
 }
 

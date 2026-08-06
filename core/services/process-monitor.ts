@@ -13,7 +13,7 @@ import type {
   TmuxPaneInfo,
 } from '../../shared/types'
 import { classifyProcess, inferStatus, suggestedPresentation } from './classification'
-import { TerminalManager, windowTitle } from './terminal-manager'
+import { SystemManager } from './system-manager'
 
 const execFileAsync = promisify(execFile)
 const ANSI_PATTERN = /[\u001b\u009b][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d/#&.:=?%@~_]+)*)?\u0007)|(?:(?:\d{1,4}(?:[;:]\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g
@@ -159,7 +159,19 @@ function findAgentProcess(
   }
   if (agent.pid) {
     const processInfo = processes.find((item) => item.pid === agent.pid) ?? null
-    if (processInfo) return { processInfo, pane: null }
+    if (processInfo) {
+      const matcher = safeRegex(agent.matchPattern)
+      const token = commandToken(agent.command)
+      const kindMatches = agent.kind === 'process' || !processInfo.kind || processInfo.kind === agent.kind
+      const commandMatches = matcher
+        ? matcher.test(`${processInfo.command} ${processInfo.args}`)
+        : token
+          ? path.basename(processInfo.command) === token
+          : kindMatches
+      if (kindMatches && commandMatches && matchesWorkingDirectory(processInfo, agent)) {
+        return { processInfo, pane: null }
+      }
+    }
   }
   const matcher = safeRegex(agent.matchPattern)
   if (matcher) {
@@ -203,7 +215,7 @@ async function listProcesses(state: ConsoleState): Promise<ProcessInfo[]> {
   return processes
 }
 
-async function listTmuxPanes(enabled: boolean): Promise<TmuxPaneInfo[]> {
+async function listTmuxPanes(enabled: boolean, captureSessions: Set<string> | null): Promise<TmuxPaneInfo[]> {
   if (!enabled) return []
   try {
     const format = [
@@ -224,6 +236,7 @@ async function listTmuxPanes(enabled: boolean): Promise<TmuxPaneInfo[]> {
     const panes = parseTmuxOutput(stdout)
     await Promise.all(
       panes.map(async (pane) => {
+        if (captureSessions && !captureSessions.has(pane.session)) return
         try {
           const { stdout: paneOutput } = await execFileAsync(
             'tmux',
@@ -386,7 +399,6 @@ async function buildRuntimeAgents(
   state: ConsoleState,
   processes: ProcessInfo[],
   panes: TmuxPaneInfo[],
-  windowTitles: string[],
 ): Promise<RuntimeAgent[]> {
   const capturedAt = new Date().toISOString()
   return Promise.all(
@@ -394,7 +406,6 @@ async function buildRuntimeAgents(
       const { processInfo, pane } = findAgentProcess(agent, processes, panes)
       const logOutput = await readFileTail(agent.logPath)
       const rawOutput = logOutput || pane?.lastOutput || ''
-      const title = windowTitle(agent)
       return {
         ...agent,
         pid: processInfo?.pid ?? agent.pid ?? null,
@@ -406,7 +417,7 @@ async function buildRuntimeAgents(
         lastOutput: lastMeaningfulLine(rawOutput) || (processInfo ? processInfo.args.slice(-500) : 'No live process matched'),
         processName: processInfo?.command ?? '',
         processState: processInfo?.processState ?? '',
-        terminalOpen: windowTitles.some((window) => window.includes(title) || window.includes(agent.terminalTitle)),
+        terminalOpen: false,
       }
     }),
   )
@@ -415,18 +426,22 @@ async function buildRuntimeAgents(
 export class ProcessMonitor {
   private timer: NodeJS.Timeout | null = null
   private scanPromise: Promise<RuntimeSnapshot> | null = null
+  private rescanRequested = false
+  private rescanWithDiscovery = false
+  private activeClients = 0
   private snapshot: RuntimeSnapshot | null = null
   private readonly listeners = new Set<(snapshot: RuntimeSnapshot) => void>()
 
   constructor(
     private readonly stateProvider: () => ConsoleState,
-    private readonly terminals: TerminalManager,
+    private readonly system: SystemManager,
   ) {}
 
   start(): void {
     this.stop()
-    const interval = this.stateProvider().settings.scanIntervalMs
-    this.timer = setInterval(() => void this.scan(), interval)
+    const configured = this.stateProvider().settings.scanIntervalMs
+    const interval = this.activeClients > 0 ? configured : Math.max(configured, 30_000)
+    this.timer = setInterval(() => void this.scan(false), interval)
     this.timer.unref()
   }
 
@@ -444,26 +459,52 @@ export class ProcessMonitor {
     return () => this.listeners.delete(listener)
   }
 
+  setActiveClients(count: number): void {
+    const next = Math.max(0, Math.floor(count))
+    if ((this.activeClients > 0) === (next > 0)) {
+      this.activeClients = next
+      return
+    }
+    this.activeClients = next
+    this.restart()
+  }
+
   get current(): RuntimeSnapshot | null {
     return this.snapshot ? structuredClone(this.snapshot) : null
   }
 
-  async scan(): Promise<RuntimeSnapshot> {
-    if (this.scanPromise) return this.scanPromise
-    this.scanPromise = this.performScan()
-    try {
-      const snapshot = await this.scanPromise
-      this.snapshot = snapshot
-      for (const listener of this.listeners) listener(structuredClone(snapshot))
-      return structuredClone(snapshot)
-    } finally {
-      this.scanPromise = null
+  async scan(includeDiscovery = this.activeClients > 0): Promise<RuntimeSnapshot> {
+    if (this.scanPromise) {
+      this.rescanRequested = true
+      this.rescanWithDiscovery = this.rescanWithDiscovery || includeDiscovery
+      return this.scanPromise
     }
+    this.rescanRequested = true
+    this.rescanWithDiscovery = includeDiscovery
+    this.scanPromise = this.drainScans().finally(() => {
+      this.scanPromise = null
+    })
+    return this.scanPromise
   }
 
-  private async performScan(): Promise<RuntimeSnapshot> {
+  private async drainScans(): Promise<RuntimeSnapshot> {
+    let latest: RuntimeSnapshot | null = null
+    while (this.rescanRequested) {
+      const includeDiscovery = this.rescanWithDiscovery
+      this.rescanRequested = false
+      this.rescanWithDiscovery = false
+      const snapshot = await this.performScan(includeDiscovery)
+      this.snapshot = snapshot
+      for (const listener of this.listeners) listener(structuredClone(snapshot))
+      latest = snapshot
+    }
+    if (!latest) throw new Error('Process scan queue finished without a snapshot.')
+    return structuredClone(latest)
+  }
+
+  private async performScan(includeDiscovery: boolean): Promise<RuntimeSnapshot> {
     const state = this.stateProvider()
-    const capabilities = await this.terminals.getCapabilities()
+    const capabilities = await this.system.getCapabilities()
     let scanError: string | null = null
     let processes: ProcessInfo[] = []
     try {
@@ -471,13 +512,13 @@ export class ProcessMonitor {
     } catch (error) {
       scanError = error instanceof Error ? error.message : String(error)
     }
-    const [panes, windowTitles, dockerItems] = await Promise.all([
-      listTmuxPanes(capabilities.tmux),
-      this.terminals.listWindowTitles(),
-      listDockerContainers(capabilities.docker),
+    const configuredSessions = new Set(state.agents.map((agent) => agent.tmuxSession).filter(Boolean))
+    const [panes, dockerItems] = await Promise.all([
+      listTmuxPanes(capabilities.tmux, includeDiscovery ? null : configuredSessions),
+      includeDiscovery ? listDockerContainers(capabilities.docker) : Promise.resolve([]),
     ])
-    const agents = await buildRuntimeAgents(state, processes, panes, windowTitles)
-    const discovered = [...buildDiscovered(processes, panes, agents), ...dockerItems]
+    const agents = await buildRuntimeAgents(state, processes, panes)
+    const discovered = includeDiscovery ? [...buildDiscovered(processes, panes, agents), ...dockerItems] : []
     return {
       capturedAt: new Date().toISOString(),
       agents,

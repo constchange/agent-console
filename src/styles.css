@@ -1261,6 +1261,16 @@ button:disabled {
   background: var(--green);
 }
 
+.app-statusbar .local-core-status--connected { color: var(--green); }
+.app-statusbar .local-core-status--reconnecting,
+.app-statusbar .local-core-status--starting { color: var(--yellow); }
+.app-statusbar .local-core-status--offline,
+.app-statusbar .local-core-status--incompatible { color: var(--red); }
+.app-statusbar .local-core-status--reconnecting i,
+.app-statusbar .local-core-status--starting i { background: var(--yellow); }
+.app-statusbar .local-core-status--offline i,
+.app-statusbar .local-core-status--incompatible i { background: var(--red); }
+
 .app-version {
   margin-left: auto;
 }

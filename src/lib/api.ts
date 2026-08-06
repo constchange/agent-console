@@ -3,6 +3,7 @@ import type {
   AgentConsoleApi,
   AgentStatus,
   ConsoleState,
+  CoreHealth,
   RuntimeAgent,
   RuntimeSnapshot,
   UpdateState,
@@ -24,6 +25,8 @@ let previewState: ConsoleState = {
     theme: 'navy-gold',
   },
 }
+
+const previewStateRevision = '0'.repeat(64)
 
 const seed = (
   id: string,
@@ -72,14 +75,14 @@ function createPreviewUpdateState(): UpdateState {
   if (previewPhase === 'available') {
     return {
       phase: 'available',
-      currentVersion: '0.3.1',
-      availableVersion: '0.3.2',
-      releaseName: 'Agent Console v0.3.2',
+      currentVersion: '0.4.0',
+      availableVersion: '0.4.1',
+      releaseName: 'Agent Console v0.4.1',
       releaseNotes: '• Improves Agent discovery on Linux Mint.\n• Adds clearer update diagnostics.\n• Keeps all existing Project and Agent data.',
       releaseDate: '2026-08-05T00:00:00.000Z',
       progress: null,
       lastCheckedAt: '2026-08-05T00:00:00.000Z',
-      message: 'Agent Console v0.3.2 is available.',
+      message: 'Agent Console v0.4.1 is available.',
       installationKind: 'appimage',
       canCheck: true,
       canDownload: true,
@@ -89,7 +92,7 @@ function createPreviewUpdateState(): UpdateState {
 
   return {
     phase: 'disabled',
-    currentVersion: '0.3.1-preview',
+    currentVersion: '0.4.0-preview',
     availableVersion: null,
     releaseName: null,
     releaseNotes: null,
@@ -105,6 +108,17 @@ function createPreviewUpdateState(): UpdateState {
 }
 
 const previewUpdateState = createPreviewUpdateState()
+
+const previewCoreHealth: CoreHealth = {
+  appVersion: '0.4.0-preview',
+  protocolVersion: 1,
+  startedAt: new Date().toISOString(),
+  pid: 0,
+  transport: 'unix',
+  stateRevision: 'preview',
+  structuredCodex: 'deferred',
+  tcpListening: false,
+}
 
 function runtimeAgent(agent: AgentConfig, index: number): RuntimeAgent {
   const status = previewStatuses[index % previewStatuses.length]
@@ -193,7 +207,15 @@ function previewSnapshot(): RuntimeSnapshot {
 }
 
 const previewApi: AgentConsoleApi = {
-  getBootstrap: async () => ({ state: previewState, snapshot: previewSnapshot(), appVersion: '0.3.1-preview', updateState: previewUpdateState, stateNotice: null }),
+  getBootstrap: async () => ({
+    state: previewState,
+    stateRevision: previewStateRevision,
+    snapshot: previewSnapshot(),
+    appVersion: '0.4.0-preview',
+    updateState: previewUpdateState,
+    stateNotice: null,
+    core: previewCoreHealth,
+  }),
   saveState: async (state) => {
     previewState = structuredClone(state)
     return previewState
@@ -210,6 +232,9 @@ const previewApi: AgentConsoleApi = {
   installUpdate: async () => ({ ok: false, action: 'preview', message: 'Updates are disabled in preview mode.' }),
   openReleasesPage: async () => undefined,
   onUpdateState: () => () => undefined,
+  getCoreHealth: async () => previewCoreHealth,
+  acknowledgeCoreState: async () => undefined,
+  onCoreConnection: () => () => undefined,
 }
 
 export function getApi(): AgentConsoleApi {

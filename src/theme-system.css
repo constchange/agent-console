@@ -920,6 +920,109 @@ body {
   font-weight: 450;
 }
 
+.local-core-panel {
+  --core-state-color: var(--theme-text-muted);
+  overflow: hidden;
+  border: 1px solid var(--theme-line);
+  border-radius: 8px;
+  background: var(--theme-surface-raised);
+}
+
+.local-core-panel--connected { --core-state-color: var(--theme-success); }
+.local-core-panel--starting,
+.local-core-panel--reconnecting { --core-state-color: var(--theme-warning); }
+.local-core-panel--offline,
+.local-core-panel--incompatible { --core-state-color: var(--theme-danger); }
+
+.local-core-panel__summary {
+  display: flex;
+  min-height: 45px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--theme-line-soft);
+  gap: 12px;
+}
+
+.local-core-panel__summary > span {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  color: var(--core-state-color);
+  gap: 7px;
+}
+
+.local-core-panel__summary i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.local-core-panel__summary strong {
+  font-size: 10px;
+}
+
+.local-core-panel__summary small {
+  overflow: hidden;
+  color: var(--theme-text-muted);
+  font-size: 8px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.local-core-detail-grid {
+  display: grid;
+  padding: 12px 14px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.local-core-detail-grid > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  padding: 9px 10px;
+  border: 1px solid var(--theme-line-soft);
+  border-radius: 6px;
+  background: var(--theme-surface);
+}
+
+.local-core-detail-grid small {
+  color: var(--theme-text-faint);
+  font-size: 7px;
+  font-weight: 650;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.local-core-detail-grid strong {
+  margin-top: 5px;
+  overflow: hidden;
+  color: var(--theme-text-soft);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.local-core-panel > p {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  padding: 9px 14px;
+  border-top: 1px solid var(--theme-line-soft);
+  color: var(--theme-text-muted);
+  font-size: 8px;
+  line-height: 1.45;
+  gap: 7px;
+}
+
+.local-core-panel > p svg {
+  flex: 0 0 13px;
+  color: var(--theme-success);
+}
+
 .update-panel {
   overflow: hidden;
   border: 1px solid var(--theme-line);
@@ -1298,6 +1401,10 @@ body {
   }
 
   .update-version-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .local-core-detail-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 

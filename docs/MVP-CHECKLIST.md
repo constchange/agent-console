@@ -12,8 +12,10 @@
 | Workspace restore | Starts missing tmux sessions and opens configured Agents in Project order |
 | Auto-discovery | Codex, terminals, tmux panes, backend patterns, Python, Node, workers, and Docker containers |
 | Manual rename | Discovery import opens full identity and matching editor before saving |
-| Local persistence | Atomic JSON state file under Electron userData; no remote service |
-| Security | Sandboxed renderer, context isolation, narrow contextBridge methods, navigation blocked |
+| Local persistence | Console Core is the sole writer of the atomic JSON state file; local task events use a private SQLite ledger |
+| Background continuity | A user-level Core stays active after the desktop window closes; `KillMode=process` avoids sending termination to tmux/Agent children when Core stops |
+| Local IPC | Versioned JSON-RPC over a `0600` Unix socket in a `0700` per-user directory; production package verification asserts zero Core TCP listeners |
+| Security | Sandboxed renderer, context isolation, narrow contextBridge/RPC allowlists, navigation blocked, private umask |
 | Editor reliability | Native Electron zoom, non-interactive hidden overlays, focus recovery, and deferred visual snapshots while forms are open |
 | Scale direction | Compact cards, Project grouping, sidebar overview, global search, process classification |
 | Application updates | Stable-channel checks, release notes, progress, checksum validation, and restart-to-install for AppImage/deb |
@@ -24,3 +26,4 @@
 - Reliable external window focus and close on Linux requires `wmctrl` or `xdotool`.
 - Docker containers are discovered and can be monitored, but container log/exec actions are reserved for a later version.
 - Windows process discovery and terminal adapters are a later cross-platform milestone; the current scanner is Linux-first.
+- Supabase authentication, device pairing, the VPS Gateway, push notifications, and the mobile client are later milestones and are not enabled by the desktop Core.

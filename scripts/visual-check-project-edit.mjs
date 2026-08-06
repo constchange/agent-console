@@ -1,19 +1,22 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { _electron as electronLauncher } from 'playwright-core'
 
 const projectRoot = path.resolve(import.meta.dirname, '..')
 const userDataPath = await mkdtemp(path.join(os.tmpdir(), 'agent-console-project-edit-'))
+const runtimePath = path.join(userDataPath, 'xdg-runtime')
 const screenshotPath = path.join(projectRoot, 'artifacts', 'project-edit-v031.png')
 const resultPath = path.join(projectRoot, 'artifacts', 'project-edit-v031-results.json')
 const packagedExecutable = process.env.AGENT_CONSOLE_EXECUTABLE
 
 let application
+let corePid = null
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
 
 async function launchApplication() {
+  await mkdir(runtimePath, { recursive: true, mode: 0o700 })
   return electronLauncher.launch({
     executablePath: packagedExecutable ?? path.join(projectRoot, 'node_modules', '.bin', 'electron'),
     args: [
@@ -27,8 +30,9 @@ async function launchApplication() {
     env: {
       ...process.env,
       ...(packagedExecutable ? { APPIMAGE_EXTRACT_AND_RUN: '1' } : {}),
-      XDG_CACHE_HOME: '/tmp/agent-console-project-edit-cache',
-      XDG_CONFIG_HOME: '/tmp/agent-console-project-edit-config',
+      XDG_CACHE_HOME: path.join(userDataPath, 'xdg-cache'),
+      XDG_CONFIG_HOME: path.join(userDataPath, 'xdg-config'),
+      XDG_RUNTIME_DIR: runtimePath,
     },
     timeout: 30_000,
   })
@@ -40,6 +44,7 @@ async function main() {
   const page = await application.firstWindow()
   await page.setViewportSize({ width: 3_840, height: 2_160 })
   await page.waitForSelector('.tree-project__main')
+  corePid = await page.evaluate(() => window.agentConsole.getCoreHealth().then((health) => health.pid))
 
   let javascriptDialogCount = 0
   page.on('dialog', async (dialog) => {
@@ -298,6 +303,7 @@ async function main() {
   application = await launchApplication()
   const reopenedPage = await application.firstWindow()
   await reopenedPage.waitForSelector('.tree-project__main')
+  corePid = await reopenedPage.evaluate(() => window.agentConsole.getCoreHealth().then((health) => health.pid))
   const flushedOnQuit = await reopenedPage.locator('.tree-project__main').filter({ hasText: 'Shutdown Flush 19' }).count() === 1
   if (!flushedOnQuit) throw new Error('Queued state changes were lost during application shutdown')
   await reopenedPage.evaluate(async () => {
@@ -338,5 +344,26 @@ try {
   await main()
 } finally {
   await application?.close().catch(() => undefined)
+  if (!corePid) {
+    const lock = await readFile(path.join(userDataPath, 'console-core.lock'), 'utf8').catch(() => '')
+    try { corePid = Number(JSON.parse(lock).pid) || null } catch { /* incomplete lock */ }
+  }
+  if (corePid) {
+    try { process.kill(corePid, 'SIGTERM') } catch { /* already stopped */ }
+    const deadline = Date.now() + 10_000
+    let alive = true
+    while (Date.now() < deadline) {
+      try {
+        process.kill(corePid, 0)
+        await delay(100)
+      } catch {
+        alive = false
+        break
+      }
+    }
+    if (alive) {
+      try { process.kill(corePid, 'SIGKILL') } catch { /* already stopped */ }
+    }
+  }
   await rm(userDataPath, { recursive: true, force: true })
 }
