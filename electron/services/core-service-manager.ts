@@ -6,6 +6,7 @@ import { promisify } from 'node:util'
 import { app } from 'electron'
 import { renderCoreServiceUnit } from '../../core/services/core-service-unit'
 import { compareReleaseVersions } from '../../core/services/release-version'
+import { matchesDetachedCoreIdentity } from './detached-core-identity'
 
 const execFileAsync = promisify(execFile)
 const SERVICE_NAME = 'agent-console-core.service'
@@ -202,16 +203,7 @@ export class CoreServiceManager {
   }
 
   private async matchesDetachedCore(pid: number): Promise<boolean> {
-    if (!Number.isInteger(pid) || pid < 2) return false
-    try {
-      const stat = await fs.stat(`/proc/${pid}`)
-      if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) return false
-      const commandLine = (await fs.readFile(`/proc/${pid}/cmdline`, 'utf8')).split('\u0000').filter(Boolean)
-      return commandLine.includes('--console-core')
-        && commandLine.includes(`--console-core-user-data=${this.userDataPath}`)
-    } catch {
-      return false
-    }
+    return matchesDetachedCoreIdentity(this.userDataPath, pid)
   }
 
   private async systemdServiceIsActive(): Promise<boolean> {
