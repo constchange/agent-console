@@ -373,9 +373,9 @@ async function cleanup() {
   }
 
   if (unitCreated && stopped) {
+    await attemptCleanup('clearing the isolated service failure state', () => systemctl('reset-failed', serviceName), failures)
     unitRemoved = await attemptCleanup('removing the isolated unit file', () => fs.rm(unitPath, { force: true }), failures)
     await attemptCleanup('reloading the user service manager', () => systemctl('daemon-reload'), failures)
-    await attemptCleanup('clearing the isolated service failure state', () => systemctl('reset-failed', serviceName), failures)
   } else if (unitCreated) {
     failures.push(new Error(`Preserved ${unitPath} and ${fixtureRoot} because the isolated service was not confirmed stopped.`))
   }
