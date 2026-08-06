@@ -108,9 +108,13 @@ jobs:
           deb_path="release/Agent-Console-${{ steps.release.outputs.version }}-amd64.deb"
           package_name="$(dpkg-deb --field "$deb_path" Package)"
           sudo apt-get install -y tmux "./$deb_path"
-          installed_executable="$(dpkg-query -L "$package_name" | grep '/agent-console$' | head -n 1)"
+          installed_command="$(command -v agent-console)"
+          installed_executable="$(readlink -f "$installed_command")"
           test -n "$installed_executable"
+          test -f "$installed_executable"
           test -x "$installed_executable"
+          installed_owner="$(dpkg-query -S "$installed_executable" | head -n 1)"
+          test "${installed_owner%%:*}" = "$package_name"
           echo "executable=$installed_executable" >> "$GITHUB_OUTPUT"
 
       - name: Verify installed packages, persistent Core, and network boundary
