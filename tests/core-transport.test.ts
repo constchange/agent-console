@@ -260,10 +260,11 @@ describe('Unix-only Core transport', () => {
     await connected.connect()
 
     await expect(connected.request('runtime.refresh')).rejects.toBeInstanceOf(CoreClientTimeoutError)
-    const pending = connected.request('runtime.get', undefined, 5_000)
+    const disconnected = expect(connected.request('runtime.get', undefined, 5_000))
+      .rejects.toBeInstanceOf(CoreClientDisconnectedError)
     await new Promise((resolve) => setTimeout(resolve, 10))
     await server.close()
-    await expect(pending).rejects.toBeInstanceOf(CoreClientDisconnectedError)
+    await disconnected
   })
 
   it('returns typed remote errors without converting them to transport failures', async ({ skip }) => {
