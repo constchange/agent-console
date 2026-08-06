@@ -21,11 +21,13 @@ import type {
 } from '../shared/types'
 import { CoreClient } from './services/core-client'
 import { CoreServiceManager } from './services/core-service-manager'
+import { drainForShutdown } from './services/shutdown-drain'
 import { TerminalManager, windowTitle } from './services/terminal-manager'
 import { UpdateManager } from './services/update-manager'
 
 const CORE_MODE_ARGUMENT = '--console-core'
 const CORE_USER_DATA_ARGUMENT = '--console-core-user-data='
+const DESKTOP_SHUTDOWN_DEADLINE_MS = 30_000
 const coreMode = process.argv.includes(CORE_MODE_ARGUMENT)
 const configuredCoreUserData = process.argv
   .find((value) => value.startsWith(CORE_USER_DATA_ARGUMENT))
@@ -66,6 +68,7 @@ let coreConnection: CoreConnectionState = {
   protocolVersion: null,
 }
 let saveQueue: Promise<void> = Promise.resolve()
+let acceptedStateSaveSequence = 0
 let quitPrepared = false
 let quitPreparation: Promise<void> | null = null
 let installingUpdate = false
@@ -235,7 +238,9 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('state:save', async (_event, value: ConsoleState) => {
+    if (quitPreparation) throw new Error('Agent Console is closing; no new changes were accepted.')
     if (installingUpdate) throw new Error('Agent Console is restarting to install the update; no new changes were accepted.')
+    acceptedStateSaveSequence += 1
     const requestedGeneration = coreStateGeneration
     const acceptedWhileSynchronized = coreStateSynchronized
     const operation = saveQueue.then(async () => {
@@ -254,6 +259,7 @@ function registerIpc(): void {
     saveQueue = operation.then(() => undefined, () => undefined)
     return operation
   })
+  ipcMain.handle('state:barrier', () => acceptedStateSaveSequence)
 
   ipcMain.handle('runtime:refresh', async () => withDesktopWindowState(
     await coreClient.request<RuntimeSnapshot>('runtime.refresh', undefined, 15_000),
@@ -462,13 +468,31 @@ app.on('before-quit', (event) => {
   if (!coreClient) return
   event.preventDefault()
   if (quitPreparation) return
-  quitPreparation = saveQueue
-    .then(async () => {
+  desktopStarted = false
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+  quitPreparation = drainForShutdown({
+    timeoutMs: DESKTOP_SHUTDOWN_DEADLINE_MS,
+    drain: async () => {
+      await saveQueue
       if (coreClient.connected) await coreClient.request('core.flush', undefined, 20_000)
+    },
+    abort: () => coreClient.disconnect(),
+  })
+    .then((result) => {
+      if (result.status === 'timed-out') {
+        console.error(`Agent Console stopped waiting for desktop saves after ${DESKTOP_SHUTDOWN_DEADLINE_MS} ms.`)
+      } else if (result.status === 'failed') {
+        console.error('Agent Console could not finish its desktop shutdown flush.', result.error)
+      }
     })
-    .catch(() => undefined)
     .finally(() => {
-      if (reconnectTimer) clearTimeout(reconnectTimer)
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer)
+        reconnectTimer = null
+      }
       coreClient.disconnect()
       quitPrepared = true
       app.quit()

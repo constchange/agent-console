@@ -8,5 +8,6 @@
 - Added a redacted future-Gateway projection containing only Agent identity, status, and update time. No Gateway or network listener is enabled in this release.
 - Added a read-only Local Console Core panel in Settings and a live Core connection indicator in the status bar.
 - Reduced background discovery work when no desktop client is connected and hardened persisted-PID matching against PID reuse.
+- Kept normal exits fully flushing queued saves while giving an unresponsive Core one shared 30-second shutdown deadline instead of multiplying every save timeout.
 
 Existing Projects, Agents, themes, interface settings, state backups, tmux sessions, and running Agent processes are not deleted or replaced during the update. The Core service uses `KillMode=process`, so stopping it does not actively terminate tmux/Agent children. Supabase login, device pairing, VPS routing, public ports, and the mobile app are intentionally not included yet.

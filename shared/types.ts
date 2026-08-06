@@ -293,6 +293,7 @@ export interface RemoteSafeSnapshot {
 export interface AgentConsoleApi {
   getBootstrap: () => Promise<BootstrapData>
   saveState: (state: ConsoleState) => Promise<ConsoleState>
+  stateBarrier: () => Promise<number>
   refresh: () => Promise<RuntimeSnapshot>
   setZoomFactor: (factor: number) => Promise<void>
   openAgent: (agentId: string) => Promise<ActionResult>

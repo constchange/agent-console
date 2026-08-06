@@ -10,6 +10,7 @@ import type {
 const api: AgentConsoleApi = {
   getBootstrap: () => ipcRenderer.invoke('bootstrap:get'),
   saveState: (state: ConsoleState) => ipcRenderer.invoke('state:save', state),
+  stateBarrier: () => ipcRenderer.invoke('state:barrier'),
   refresh: () => ipcRenderer.invoke('runtime:refresh'),
   setZoomFactor: (factor: number) => ipcRenderer.invoke('ui:set-zoom-factor', factor),
   openAgent: (agentId: string) => ipcRenderer.invoke('agent:open', agentId),

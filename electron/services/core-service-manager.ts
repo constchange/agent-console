@@ -82,9 +82,16 @@ export class CoreServiceManager {
 
   async installAndStart(): Promise<CoreServiceState> {
     await this.resolveLaunchTarget()
-    if (!app.isPackaged) {
+    // Hermetic integration checks opt into the detached path before this
+    // method writes or starts any user-systemd unit.
+    const forceDetached = process.env.AGENT_CONSOLE_FORCE_DETACHED_CORE === '1'
+    if (!app.isPackaged || forceDetached) {
       this.spawnDetached()
-      this.serviceState = { mode: 'development', unitPath: null, launchExecutable: this.launchExecutable }
+      this.serviceState = {
+        mode: app.isPackaged ? 'detached-fallback' : 'development',
+        unitPath: null,
+        launchExecutable: this.launchExecutable,
+      }
       return this.serviceState
     }
 

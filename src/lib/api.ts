@@ -220,6 +220,7 @@ const previewApi: AgentConsoleApi = {
     previewState = structuredClone(state)
     return previewState
   },
+  stateBarrier: async () => 0,
   refresh: async () => previewSnapshot(),
   setZoomFactor: async () => undefined,
   openAgent: async () => ({ ok: true, action: 'focused', message: 'Terminal focused (preview)' }),
