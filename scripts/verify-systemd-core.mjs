@@ -237,6 +237,26 @@ async function systemctl(...args) {
   return runCommand('systemctl', ['--user', ...args])
 }
 
+async function resetServiceFailureState() {
+  try {
+    await systemctl('reset-failed', serviceName)
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error ? Number(error.code) : NaN
+    const stdout = error && typeof error === 'object' && 'stdout' in error && typeof error.stdout === 'string'
+      ? error.stdout
+      : ''
+    const stderr = error && typeof error === 'object' && 'stderr' in error && typeof error.stderr === 'string'
+      ? error.stderr
+      : ''
+    const alreadyUnloaded = `Failed to reset failed state of unit ${serviceName}: Unit ${serviceName} not loaded.`
+    if (code === 1 && stdout === '' && stderr.trim() === alreadyUnloaded) {
+      checkpoint('isolated user service was already unloaded; no failure state remained to clear')
+      return
+    }
+    throw error
+  }
+}
+
 async function writeFixtureState() {
   const state = {
     version: 1,
@@ -373,7 +393,7 @@ async function cleanup() {
   }
 
   if (unitCreated && stopped) {
-    await attemptCleanup('clearing the isolated service failure state', () => systemctl('reset-failed', serviceName), failures)
+    await attemptCleanup('clearing the isolated service failure state', resetServiceFailureState, failures)
     unitRemoved = await attemptCleanup('removing the isolated unit file', () => fs.rm(unitPath, { force: true }), failures)
     await attemptCleanup('reloading the user service manager', () => systemctl('daemon-reload'), failures)
   } else if (unitCreated) {
