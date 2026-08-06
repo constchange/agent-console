@@ -42,31 +42,45 @@ function processStartTime(rawStat) {
   return rawStat.slice(commandEnd + 2).trim().split(/\s+/)[19] ?? null
 }
 
-async function processSnapshot(pid) {
-  if (!Number.isInteger(pid) || pid <= 1) return null
+function errorCode(error) {
+  return error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : 'unknown'
+}
+
+async function processSnapshot(pid, onFailure) {
+  if (!Number.isInteger(pid) || pid <= 1) {
+    onFailure?.('invalid-pid')
+    return null
+  }
   try {
     const [initialDirectory, initialRawStat] = await Promise.all([
       stat(`/proc/${pid}`),
       readFile(`/proc/${pid}/stat`, 'utf8'),
     ])
     const initialStartTime = processStartTime(initialRawStat)
-    if (!initialStartTime) return null
-    const [rawCommandLine, rawEnvironment, finalDirectory, finalRawStat] = await Promise.all([
+    if (!initialStartTime) {
+      onFailure?.('invalid-initial-stat')
+      return null
+    }
+    const [rawCommandLine, finalDirectory, finalRawStat] = await Promise.all([
       readFile(`/proc/${pid}/cmdline`, 'utf8'),
-      readFile(`/proc/${pid}/environ`, 'utf8'),
       stat(`/proc/${pid}`),
       readFile(`/proc/${pid}/stat`, 'utf8'),
     ])
     const finalStartTime = processStartTime(finalRawStat)
-    if (!finalStartTime || finalStartTime !== initialStartTime || finalDirectory.uid !== initialDirectory.uid) return null
+    if (!finalStartTime || finalStartTime !== initialStartTime || finalDirectory.uid !== initialDirectory.uid) {
+      onFailure?.('identity-changed-during-read')
+      return null
+    }
     return {
       pid,
       uid: finalDirectory.uid,
       startTime: finalStartTime,
       commandLine: rawCommandLine.split('\u0000').filter(Boolean),
-      environment: rawEnvironment.split('\u0000').filter(Boolean),
     }
-  } catch {
+  } catch (error) {
+    onFailure?.(`proc-read-${errorCode(error)}`)
     return null
   }
 }
@@ -76,15 +90,12 @@ async function captureProcessIdentity(pid, requirements = {}) {
   if (!snapshot) return null
   if (typeof process.getuid === 'function' && snapshot.uid !== process.getuid()) return null
   const requiredArguments = requirements.arguments ?? []
-  const requiredEnvironment = requirements.environment ?? []
   if (!requiredArguments.every((argument) => snapshot.commandLine.includes(argument))) return null
-  if (!requiredEnvironment.every((entry) => snapshot.environment.includes(entry))) return null
   return {
     pid: snapshot.pid,
     uid: snapshot.uid,
     startTime: snapshot.startTime,
     requiredArguments: [...requiredArguments],
-    requiredEnvironment: [...requiredEnvironment],
   }
 }
 
@@ -95,7 +106,6 @@ async function matchesProcessIdentity(identity) {
     && snapshot.uid === identity.uid
     && snapshot.startTime === identity.startTime
     && identity.requiredArguments.every((argument) => snapshot.commandLine.includes(argument))
-    && identity.requiredEnvironment.every((entry) => snapshot.environment.includes(entry))
 }
 
 async function signalProcess(identity, signal) {
@@ -160,53 +170,73 @@ async function closeApplication(target, label, timeoutMs, requireCleanClose = tr
 
 const CORE_USER_DATA_PREFIX = '--console-core-user-data='
 const coreBaseRequirements = {
-  arguments: ['--console-core'],
-  environment: ['AGENT_CONSOLE_CORE_FALLBACK=1'],
+  // CoreServiceManager adds --no-sandbox only for the explicitly forced,
+  // hermetic detached path. Unlike /proc/<pid>/environ, argv remains readable
+  // for this same-UID detached grandchild on hardened CI runners.
+  arguments: ['--console-core', '--no-sandbox'],
 }
 
-function isStrictDescendant(parent, candidate) {
+function isWithinDirectory(parent, candidate) {
   const relative = path.relative(parent, candidate)
-  return Boolean(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+  return relative === ''
+    || relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
 }
 
-async function validatedCoreUserDataPath(commandLine) {
+async function inspectCoreUserDataPath(commandLine) {
   const argumentsForUserData = commandLine.filter((argument) => argument.startsWith(CORE_USER_DATA_PREFIX))
-  if (argumentsForUserData.length !== 1) return null
+  if (argumentsForUserData.length !== 1) {
+    return { path: null, reason: `user-data-argument-count-${argumentsForUserData.length}` }
+  }
   const candidate = argumentsForUserData[0].slice(CORE_USER_DATA_PREFIX.length)
-  if (!candidate || !path.isAbsolute(candidate) || path.normalize(candidate) !== candidate) return null
+  if (!candidate) return { path: null, reason: 'empty-user-data-path' }
+  if (!path.isAbsolute(candidate)) return { path: null, reason: 'relative-user-data-path' }
+  if (path.normalize(candidate) !== candidate) return { path: null, reason: 'non-normalized-user-data-path' }
   const resolved = path.resolve(candidate)
-  if (!isStrictDescendant(userDataPath, resolved)) return null
+  if (!isWithinDirectory(userDataPath, resolved)) return { path: null, reason: 'outside-test-root' }
   try {
     const [canonical, candidateStat] = await Promise.all([realpath(resolved), stat(resolved)])
-    if (!candidateStat.isDirectory() || !isStrictDescendant(userDataRealPath, canonical)) return null
-    if (typeof process.getuid === 'function' && candidateStat.uid !== process.getuid()) return null
-    return resolved
-  } catch {
-    return null
+    if (!candidateStat.isDirectory()) return { path: null, reason: 'user-data-not-directory' }
+    if (!isWithinDirectory(userDataRealPath, canonical)) return { path: null, reason: 'canonical-path-outside-test-root' }
+    if (typeof process.getuid === 'function' && candidateStat.uid !== process.getuid()) {
+      return { path: null, reason: 'user-data-uid-mismatch' }
+    }
+    return { path: resolved, reason: null }
+  } catch (error) {
+    return { path: null, reason: `user-data-read-${errorCode(error)}` }
   }
 }
 
-async function captureInitialCoreIdentity(pid) {
-  const snapshot = await processSnapshot(pid)
-  if (!snapshot) return null
-  if (typeof process.getuid === 'function' && snapshot.uid !== process.getuid()) return null
-  if (!coreBaseRequirements.arguments.every((argument) => snapshot.commandLine.includes(argument))) return null
-  if (!coreBaseRequirements.environment.every((entry) => snapshot.environment.includes(entry))) return null
-  const actualUserDataPath = await validatedCoreUserDataPath(snapshot.commandLine)
-  if (!actualUserDataPath) return null
+async function captureInitialCoreIdentity(pid, diagnosticLabel) {
+  const reject = (reason, details = {}) => {
+    if (diagnosticLabel) {
+      checkpoint(`${diagnosticLabel} identity rejected: ${JSON.stringify({ pid, reason, ...details })}`)
+    }
+    return null
+  }
+  let snapshotFailure = 'snapshot-unavailable'
+  const snapshot = await processSnapshot(pid, (reason) => { snapshotFailure = reason })
+  if (!snapshot) return reject(snapshotFailure)
+  if (typeof process.getuid === 'function' && snapshot.uid !== process.getuid()) {
+    return reject('process-uid-mismatch', { processUid: snapshot.uid, currentUid: process.getuid() })
+  }
+  const missingArguments = coreBaseRequirements.arguments.filter((argument) => !snapshot.commandLine.includes(argument))
+  if (missingArguments.length > 0) return reject('missing-isolation-arguments', { missingArguments })
+  const inspectedUserData = await inspectCoreUserDataPath(snapshot.commandLine)
+  if (!inspectedUserData.path) return reject(inspectedUserData.reason ?? 'invalid-user-data-path')
+  const actualUserDataPath = inspectedUserData.path
   const identity = await captureProcessIdentity(pid, {
-    arguments: ['--console-core', `${CORE_USER_DATA_PREFIX}${actualUserDataPath}`],
-    environment: coreBaseRequirements.environment,
+    arguments: [...coreBaseRequirements.arguments, `${CORE_USER_DATA_PREFIX}${actualUserDataPath}`],
   })
-  if (!identity || identity.uid !== snapshot.uid || identity.startTime !== snapshot.startTime) return null
+  if (!identity || identity.uid !== snapshot.uid || identity.startTime !== snapshot.startTime) {
+    return reject('identity-changed-during-capture')
+  }
   return { identity, userDataPath: actualUserDataPath }
 }
 
 async function captureCoreIdentity(pid) {
   if (!coreUserDataPath) return null
   return captureProcessIdentity(pid, {
-    arguments: ['--console-core', `${CORE_USER_DATA_PREFIX}${coreUserDataPath}`],
-    environment: coreBaseRequirements.environment,
+    arguments: [...coreBaseRequirements.arguments, `${CORE_USER_DATA_PREFIX}${coreUserDataPath}`],
   })
 }
 
@@ -291,7 +321,7 @@ async function main() {
   await page.waitForSelector('.tree-project__main')
   const firstCorePid = await page.evaluate(() => window.agentConsole.getCoreHealth().then((health) => health.pid))
   knownCorePid = firstCorePid
-  const firstCore = await captureInitialCoreIdentity(firstCorePid)
+  const firstCore = await captureInitialCoreIdentity(firstCorePid, 'initial Core')
   if (!firstCore) throw new Error(`Core process ${firstCorePid} is not the isolated Core for this visual test`)
   coreIdentity = firstCore.identity
   coreUserDataPath = firstCore.userDataPath
@@ -611,15 +641,13 @@ async function main() {
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
 }
 
-try {
-  await main()
-} finally {
+async function cleanupVisualRegressionProcesses() {
   checkpoint('cleaning up visual regression processes')
   const finalApplication = application
   application = undefined
   await closeApplication(finalApplication, 'the final desktop', 40_000, false)
   if (!coreUserDataPath && knownCorePid) {
-    const knownCore = await captureInitialCoreIdentity(knownCorePid)
+    const knownCore = await captureInitialCoreIdentity(knownCorePid, 'cleanup known Core')
     if (knownCore) {
       coreIdentity = knownCore.identity
       coreUserDataPath = knownCore.userDataPath
@@ -659,3 +687,27 @@ try {
   }
   await rm(userDataPath, { recursive: true, force: true })
 }
+
+let mainFailure
+try {
+  await main()
+} catch (error) {
+  mainFailure = error
+}
+
+let cleanupFailure
+try {
+  await cleanupVisualRegressionProcesses()
+} catch (error) {
+  cleanupFailure = error
+}
+
+if (mainFailure && cleanupFailure) {
+  throw new AggregateError(
+    [mainFailure, cleanupFailure],
+    'The visual regression failed and its isolated-process cleanup also failed.',
+    { cause: mainFailure },
+  )
+}
+if (mainFailure) throw mainFailure
+if (cleanupFailure) throw cleanupFailure
