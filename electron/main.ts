@@ -441,6 +441,13 @@ if (hasApplicationInstanceLock) app.whenReady().then(coreMode ? startConsoleCore
     app.exit(1)
     return
   }
+  console.error('Agent Console desktop could not start:', message)
+  if (process.env.AGENT_CONSOLE_FORCE_DETACHED_CORE === '1') {
+    // Hermetic visual checks have no person available to dismiss a native
+    // error box. Exit with diagnostics instead of blocking the CI runner.
+    app.exit(1)
+    return
+  }
   dialog.showErrorBox(
     'Agent Console could not start its private local Core',
     `Your existing state file was not replaced. Agent Console did not fall back to a second writer.\n\n${message}`,

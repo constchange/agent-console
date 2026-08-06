@@ -210,9 +210,16 @@ async function launchApplication() {
   })
 }
 
+function forwardApplicationOutput(target, label) {
+  const child = target.process()
+  child?.stdout?.on('data', (chunk) => process.stdout.write(`[${label}:stdout] ${String(chunk)}`))
+  child?.stderr?.on('data', (chunk) => process.stderr.write(`[${label}:stderr] ${String(chunk)}`))
+}
+
 async function main() {
   checkpoint('launching first desktop')
   application = await launchApplication()
+  forwardApplicationOutput(application, 'first-desktop')
   application.on('console', (message) => {
     process.stdout.write(`[electron:${message.type()}] ${message.text()}\n`)
   })
@@ -493,6 +500,7 @@ async function main() {
   }
   checkpoint('first desktop closed; launching replacement desktop')
   application = await launchApplication()
+  forwardApplicationOutput(application, 'replacement-desktop')
   application.on('console', (message) => {
     process.stdout.write(`[electron:${message.type()}] ${message.text()}\n`)
   })

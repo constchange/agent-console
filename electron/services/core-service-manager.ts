@@ -176,11 +176,28 @@ export class CoreServiceManager {
   }
 
   private spawnDetached(): void {
+    const integrationDiagnostics = process.env.AGENT_CONSOLE_FORCE_DETACHED_CORE === '1'
     const child = spawn(
       this.launchExecutable,
-      [...this.launchPrefix, '--console-core', `--console-core-user-data=${this.userDataPath}`, '--disable-gpu'],
-      { detached: true, stdio: 'ignore', env: { ...process.env, AGENT_CONSOLE_CORE_FALLBACK: '1' } },
+      [
+        ...this.launchPrefix,
+        '--console-core',
+        `--console-core-user-data=${this.userDataPath}`,
+        '--disable-gpu',
+        ...(integrationDiagnostics ? ['--no-sandbox'] : []),
+      ],
+      {
+        detached: true,
+        stdio: integrationDiagnostics ? ['ignore', 'inherit', 'inherit'] : 'ignore',
+        env: { ...process.env, AGENT_CONSOLE_CORE_FALLBACK: '1' },
+      },
     )
+    if (integrationDiagnostics) {
+      child.on('error', (error) => console.error('Detached Console Core process failed to launch:', error))
+      child.on('exit', (code, signal) => {
+        if (code !== 0) console.error(`Detached Console Core exited with code ${String(code)} and signal ${String(signal)}.`)
+      })
+    }
     child.unref()
   }
 
