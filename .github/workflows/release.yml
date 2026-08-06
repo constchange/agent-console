@@ -24,7 +24,8 @@ permissions:
 
 concurrency:
   group: agent-console-release
-  cancel-in-progress: false
+  # A newer main commit must supersede a stale pre-release verification run.
+  cancel-in-progress: true
 
 jobs:
   release:
@@ -119,6 +120,7 @@ jobs:
 
       - name: Verify installed packages, persistent Core, and network boundary
         if: steps.release.outputs.needs_publish == 'true'
+        timeout-minutes: 5
         run: xvfb-run -a npm run test:packaged-core -- release "${{ steps.installed_deb.outputs.executable }}"
 
       - name: Start a real user systemd manager
@@ -140,6 +142,7 @@ jobs:
 
       - name: Verify real systemd user start, restart, and tmux continuity
         if: steps.release.outputs.needs_publish == 'true'
+        timeout-minutes: 4
         run: node scripts/verify-systemd-core.mjs "${{ steps.installed_deb.outputs.executable }}"
 
       - name: Create or repair the GitHub release
