@@ -1,10 +1,11 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { _electron as electronLauncher } from 'playwright-core'
 
 const projectRoot = path.resolve(import.meta.dirname, '..')
 const userDataPath = await mkdtemp(path.join(os.tmpdir(), 'agent-console-project-edit-'))
+const userDataRealPath = await realpath(userDataPath)
 const runtimePath = path.join(userDataPath, 'xdg-runtime')
 const screenshotPath = path.join(projectRoot, 'artifacts', 'project-edit-v031.png')
 const resultPath = path.join(projectRoot, 'artifacts', 'project-edit-v031-results.json')
@@ -12,6 +13,8 @@ const packagedExecutable = process.env.AGENT_CONSOLE_EXECUTABLE
 
 let application
 let coreIdentity = null
+let coreUserDataPath = null
+let knownCorePid = null
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
 
@@ -116,17 +119,18 @@ async function waitForProcessExit(identity, timeoutMs) {
 }
 
 async function terminateProcess(identity, label, gracefulTimeoutMs, killTimeoutMs) {
-  if (!identity || !await matchesProcessIdentity(identity)) return
+  if (!identity || !await matchesProcessIdentity(identity)) return false
 
   checkpoint(`terminating ${label} process ${identity.pid}`)
-  if (!await signalProcess(identity, 'SIGTERM')) return
-  if (await waitForProcessExit(identity, gracefulTimeoutMs)) return
+  if (!await signalProcess(identity, 'SIGTERM')) return false
+  if (await waitForProcessExit(identity, gracefulTimeoutMs)) return true
 
   checkpoint(`force-killing ${label} process ${identity.pid}`)
-  if (!await signalProcess(identity, 'SIGKILL')) return
+  if (!await signalProcess(identity, 'SIGKILL')) return true
   if (!await waitForProcessExit(identity, killTimeoutMs)) {
     throw new Error(`${label} process ${identity.pid} retained the same verified identity after SIGKILL`)
   }
+  return true
 }
 
 async function closeApplication(target, label, timeoutMs, requireCleanClose = true) {
@@ -138,30 +142,77 @@ async function closeApplication(target, label, timeoutMs, requireCleanClose = tr
     return
   }
   const identity = await captureProcessIdentity(child?.pid, {
-    arguments: [`--user-data-dir=${userDataPath}`],
+    arguments: ['--no-sandbox', `--user-data-dir=${userDataPath}`],
   })
   try {
     await withTimeout(`closing ${label}`, target.close(), timeoutMs)
   } catch (error) {
     checkpoint(`${label} did not close cleanly: ${error instanceof Error ? error.message : String(error)}`)
     if (!identity) throw new Error(`${label} process identity could not be verified; refusing to signal it`, { cause: error })
-    await terminateProcess(identity, label, 3_000, 2_000)
-    if (requireCleanClose) throw error
+    if (!await matchesProcessIdentity(identity)) {
+      checkpoint(`${label} process already exited with its captured identity; ignoring the stale Playwright close promise`)
+      return
+    }
+    const signalled = await terminateProcess(identity, label, 3_000, 2_000)
+    if (requireCleanClose && signalled) throw error
   }
 }
 
-const coreArguments = ['--console-core', `--console-core-user-data=${userDataPath}`]
-const coreRequirements = {
-  arguments: coreArguments,
+const CORE_USER_DATA_PREFIX = '--console-core-user-data='
+const coreBaseRequirements = {
+  arguments: ['--console-core'],
   environment: ['AGENT_CONSOLE_CORE_FALLBACK=1'],
 }
 
+function isStrictDescendant(parent, candidate) {
+  const relative = path.relative(parent, candidate)
+  return Boolean(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+}
+
+async function validatedCoreUserDataPath(commandLine) {
+  const argumentsForUserData = commandLine.filter((argument) => argument.startsWith(CORE_USER_DATA_PREFIX))
+  if (argumentsForUserData.length !== 1) return null
+  const candidate = argumentsForUserData[0].slice(CORE_USER_DATA_PREFIX.length)
+  if (!candidate || !path.isAbsolute(candidate) || path.normalize(candidate) !== candidate) return null
+  const resolved = path.resolve(candidate)
+  if (!isStrictDescendant(userDataPath, resolved)) return null
+  try {
+    const [canonical, candidateStat] = await Promise.all([realpath(resolved), stat(resolved)])
+    if (!candidateStat.isDirectory() || !isStrictDescendant(userDataRealPath, canonical)) return null
+    if (typeof process.getuid === 'function' && candidateStat.uid !== process.getuid()) return null
+    return resolved
+  } catch {
+    return null
+  }
+}
+
+async function captureInitialCoreIdentity(pid) {
+  const snapshot = await processSnapshot(pid)
+  if (!snapshot) return null
+  if (typeof process.getuid === 'function' && snapshot.uid !== process.getuid()) return null
+  if (!coreBaseRequirements.arguments.every((argument) => snapshot.commandLine.includes(argument))) return null
+  if (!coreBaseRequirements.environment.every((entry) => snapshot.environment.includes(entry))) return null
+  const actualUserDataPath = await validatedCoreUserDataPath(snapshot.commandLine)
+  if (!actualUserDataPath) return null
+  const identity = await captureProcessIdentity(pid, {
+    arguments: ['--console-core', `${CORE_USER_DATA_PREFIX}${actualUserDataPath}`],
+    environment: coreBaseRequirements.environment,
+  })
+  if (!identity || identity.uid !== snapshot.uid || identity.startTime !== snapshot.startTime) return null
+  return { identity, userDataPath: actualUserDataPath }
+}
+
 async function captureCoreIdentity(pid) {
-  return captureProcessIdentity(pid, coreRequirements)
+  if (!coreUserDataPath) return null
+  return captureProcessIdentity(pid, {
+    arguments: ['--console-core', `${CORE_USER_DATA_PREFIX}${coreUserDataPath}`],
+    environment: coreBaseRequirements.environment,
+  })
 }
 
 async function coreIdentityFromLock() {
-  const raw = await readFile(path.join(userDataPath, 'console-core.lock'), 'utf8').catch(() => '')
+  if (!coreUserDataPath) return null
+  const raw = await readFile(path.join(coreUserDataPath, 'console-core.lock'), 'utf8').catch(() => '')
   if (!raw) return null
   try {
     const record = JSON.parse(raw)
@@ -172,6 +223,17 @@ async function coreIdentityFromLock() {
   } catch {
     return null
   }
+}
+
+async function discoverInitialCoreIdentities() {
+  const entries = await readdir('/proc').catch(() => [])
+  const candidates = []
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue
+    const candidate = await captureInitialCoreIdentity(Number(entry))
+    if (candidate) candidates.push(candidate)
+  }
+  return candidates
 }
 
 async function findProcessIdentities(requirements) {
@@ -228,8 +290,11 @@ async function main() {
   await page.setViewportSize({ width: 3_840, height: 2_160 })
   await page.waitForSelector('.tree-project__main')
   const firstCorePid = await page.evaluate(() => window.agentConsole.getCoreHealth().then((health) => health.pid))
-  coreIdentity = await captureCoreIdentity(firstCorePid)
-  if (!coreIdentity) throw new Error(`Core process ${firstCorePid} is not the isolated Core for this visual test`)
+  knownCorePid = firstCorePid
+  const firstCore = await captureInitialCoreIdentity(firstCorePid)
+  if (!firstCore) throw new Error(`Core process ${firstCorePid} is not the isolated Core for this visual test`)
+  coreIdentity = firstCore.identity
+  coreUserDataPath = firstCore.userDataPath
 
   let javascriptDialogCount = 0
   page.on('dialog', async (dialog) => {
@@ -507,6 +572,7 @@ async function main() {
   const reopenedPage = await withTimeout('waiting for the replacement desktop window', application.firstWindow(), 45_000)
   await reopenedPage.waitForSelector('.tree-project__main')
   const reopenedCorePid = await reopenedPage.evaluate(() => window.agentConsole.getCoreHealth().then((health) => health.pid))
+  knownCorePid = reopenedCorePid
   coreIdentity = await captureCoreIdentity(reopenedCorePid)
   if (!coreIdentity) throw new Error(`Core process ${reopenedCorePid} is not the isolated Core for this visual test`)
   const flushedOnQuit = await reopenedPage.locator('.tree-project__main').filter({ hasText: 'Shutdown Flush 19' }).count() === 1
@@ -552,6 +618,25 @@ try {
   const finalApplication = application
   application = undefined
   await closeApplication(finalApplication, 'the final desktop', 40_000, false)
+  if (!coreUserDataPath && knownCorePid) {
+    const knownCore = await captureInitialCoreIdentity(knownCorePid)
+    if (knownCore) {
+      coreIdentity = knownCore.identity
+      coreUserDataPath = knownCore.userDataPath
+    }
+  }
+  if (!coreUserDataPath) {
+    const discovered = await discoverInitialCoreIdentities()
+    const discoveredPaths = new Set(discovered.map((candidate) => candidate.userDataPath))
+    if (discoveredPaths.size !== 1) {
+      throw new Error(
+        `Could not identify one exact isolated Core user-data path inside ${userDataPath}; refusing process cleanup`,
+      )
+    }
+    coreUserDataPath = discovered[0].userDataPath
+    coreIdentity = discovered.find((candidate) => candidate.userDataPath === coreUserDataPath)?.identity ?? null
+  }
+  const coreArguments = ['--console-core', `${CORE_USER_DATA_PREFIX}${coreUserDataPath}`]
   const lockedCoreIdentity = await coreIdentityFromLock()
   const matchingCoreProcesses = await findProcessIdentities({ arguments: coreArguments })
   const isolatedCoreProcesses = []
