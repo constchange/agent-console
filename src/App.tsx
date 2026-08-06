@@ -17,6 +17,9 @@ import type {
   AgentConfig,
   ConsoleSettings,
   ConsoleState,
+  CoreConnectionPhase,
+  CoreConnectionState,
+  CoreHealth,
   DiscoveredItem,
   Project,
   RuntimeAgent,
@@ -39,6 +42,14 @@ type EditorState =
 interface ToastState {
   tone: 'success' | 'error' | 'info'
   message: string
+}
+
+const CORE_CONNECTION_LABELS: Record<CoreConnectionPhase, string> = {
+  starting: 'STARTING',
+  connected: 'CONNECTED',
+  reconnecting: 'RECONNECTING',
+  offline: 'OFFLINE',
+  incompatible: 'VERSION MISMATCH',
 }
 
 function hydrateSnapshot(state: ConsoleState, snapshot: RuntimeSnapshot): RuntimeSnapshot {
@@ -92,6 +103,13 @@ export default function App() {
   const [snapshot, setSnapshot] = useState<RuntimeSnapshot | null>(null)
   const [appVersion, setAppVersion] = useState('')
   const [updateState, setUpdateState] = useState<UpdateState | null>(null)
+  const [coreHealth, setCoreHealth] = useState<CoreHealth | null>(null)
+  const [coreConnection, setCoreConnection] = useState<CoreConnectionState>({
+    phase: 'starting',
+    message: 'Starting local Console Core…',
+    coreVersion: null,
+    protocolVersion: null,
+  })
   const [selectedProjectId, setSelectedProjectId] = useState('all')
   const [search, setSearch] = useState('')
   const [editor, setEditor] = useState<EditorState>(null)
@@ -119,16 +137,46 @@ export default function App() {
 
   useEffect(() => {
     let active = true
-    void api.getBootstrap().then((bootstrap) => {
-      if (!active) return
+    let bootstrapSequence = 0
+    const applyBootstrap = (bootstrap: Awaited<ReturnType<typeof api.getBootstrap>>, showNotice: boolean) => {
+      latestSaveRef.current += 1
+      latestDurableSaveRef.current = latestSaveRef.current
       stateRef.current = bootstrap.state
       durableStateRef.current = bootstrap.state
       setState(bootstrap.state)
-      setSnapshot(bootstrap.snapshot)
+      if (editorOpenRef.current) queuedSnapshotRef.current = bootstrap.snapshot
+      else setSnapshot(bootstrap.snapshot)
       setAppVersion(bootstrap.appVersion)
       setUpdateState(bootstrap.updateState)
-      if (bootstrap.stateNotice) notify(bootstrap.stateNotice, 'info')
-    }).catch((error) => notify(error instanceof Error ? error.message : String(error), 'error'))
+      setCoreHealth(bootstrap.core)
+      if (showNotice && bootstrap.stateNotice) notify(bootstrap.stateNotice, 'info')
+    }
+    const synchronizeBootstrap = async (sequence: number, showNotice: boolean) => {
+      let lastError: unknown = null
+      for (let attempt = 0; attempt < 5 && active && sequence === bootstrapSequence; attempt += 1) {
+        try {
+          const bootstrap = await api.getBootstrap()
+          if (!active || sequence !== bootstrapSequence) return
+          applyBootstrap(bootstrap, showNotice && attempt === 0)
+          await api.acknowledgeCoreState(bootstrap.stateRevision)
+          if (!active || sequence !== bootstrapSequence) return
+          setCoreConnection({
+            phase: 'connected',
+            message: 'Console Core is connected over a local Unix socket.',
+            coreVersion: bootstrap.core.appVersion,
+            protocolVersion: bootstrap.core.protocolVersion,
+          })
+          return
+        } catch (error) {
+          lastError = error
+        }
+      }
+      if (active && sequence === bootstrapSequence && lastError) {
+        notify(lastError instanceof Error ? lastError.message : String(lastError), 'error')
+      }
+    }
+    const initialSequence = ++bootstrapSequence
+    void synchronizeBootstrap(initialSequence, true)
     const unsubscribe = api.onSnapshot((next) => {
       if (!active) return
       if (editorOpenRef.current) {
@@ -140,10 +188,20 @@ export default function App() {
     const unsubscribeUpdates = api.onUpdateState((next) => {
       if (active) setUpdateState(next)
     })
+    const unsubscribeCore = api.onCoreConnection((next) => {
+      if (!active) return
+      bootstrapSequence += 1
+      const sequence = bootstrapSequence
+      setCoreConnection(next)
+      if (next.phase === 'connected') {
+        void synchronizeBootstrap(sequence, false)
+      }
+    })
     return () => {
       active = false
       unsubscribe()
       unsubscribeUpdates()
+      unsubscribeCore()
       if (toastTimer.current) window.clearTimeout(toastTimer.current)
     }
   }, [api, notify])
@@ -224,7 +282,7 @@ export default function App() {
     return operation.catch(() => undefined)
   }, [api, notify])
 
-  if (!state || !snapshot || !updateState) {
+  if (!state || !snapshot || !updateState || !coreHealth) {
     return (
       <div className="boot-screen">
         <div className="brand-mark brand-mark--large"><span /></div>
@@ -448,7 +506,14 @@ export default function App() {
         />
 
         <footer className="app-statusbar">
-          <span><i /> LOCAL</span>
+          <span
+            className={`local-core-status local-core-status--${coreConnection.phase}`}
+            title={coreConnection.message}
+            role="status"
+            aria-live="polite"
+          >
+            <i /> LOCAL CORE · {CORE_CONNECTION_LABELS[coreConnection.phase]}
+          </span>
           <span><Server size={11} /> {hydrated.capabilities.platform.toUpperCase()}</span>
           <span><Cpu size={11} /> SCAN {state.settings.scanIntervalMs / 1000}s</span>
           <span><Type size={11} /> {displaySettings.fontSizePx}px</span>
@@ -484,6 +549,8 @@ export default function App() {
           settings={state.settings}
           availableTerminals={hydrated.capabilities.terminals}
           updateState={updateState}
+          coreHealth={coreHealth}
+          coreConnection={coreConnection}
           onPreview={setAppearancePreview}
           onSave={(settings: ConsoleSettings) => { setAppearancePreview(null); setEditor(null); void persist((current) => ({ ...current, settings }), 'Settings saved') }}
           onClose={() => { setAppearancePreview(null); setEditor(null) }}

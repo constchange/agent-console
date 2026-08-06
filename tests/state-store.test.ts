@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { ConsoleState } from '../shared/types'
-import { createDefaultState, sanitizeState, StateStore } from '../electron/services/state-store'
+import { createDefaultState, sanitizeState, StateStore } from '../core/services/state-store'
 
 async function temporaryDirectory(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), 'agent-console-state-test-'))

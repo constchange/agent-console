@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs'
+import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import { THEME_IDS, type AgentConfig, type ConsoleState, type Project, type TerminalApp, type ThemeId } from '../../shared/types'
@@ -192,6 +193,10 @@ function parsePersistedState(raw: string): ConsoleState {
   return state
 }
 
+export function stateRevision(state: ConsoleState): string {
+  return createHash('sha256').update(JSON.stringify(state)).digest('hex')
+}
+
 export class StateStore {
   private readonly filePath: string
   private readonly backupPath: string
@@ -207,15 +212,19 @@ export class StateStore {
 
   async load(): Promise<ConsoleState> {
     if (this.state) return structuredClone(this.state)
+    await fs.mkdir(path.dirname(this.filePath), { recursive: true, mode: 0o700 })
+    await fs.chmod(path.dirname(this.filePath), 0o700)
 
     const primary = await this.readPersistedState(this.filePath)
     if (primary.kind === 'valid') {
+      await fs.chmod(this.filePath, 0o600)
       this.state = primary.state
       return structuredClone(primary.state)
     }
 
     const backup = await this.readPersistedState(this.backupPath)
     if (backup.kind === 'valid') {
+      await fs.chmod(this.backupPath, 0o600)
       if (primary.kind === 'invalid') await this.archiveCorruptFile(this.filePath)
       await this.write(backup.state, false)
       this.state = backup.state
@@ -263,6 +272,29 @@ export class StateStore {
     return this.recoveryNotice
   }
 
+  async createPreCoreSnapshot(label = 'v1'): Promise<string | null> {
+    await this.flush()
+    const snapshotPath = path.join(path.dirname(this.filePath), `mission-control-state.pre-core-${label}.json`)
+    try {
+      await fs.access(snapshotPath)
+      await fs.chmod(snapshotPath, 0o600)
+      return snapshotPath
+    } catch {
+      // Create the migration checkpoint exactly once.
+    }
+    const primary = await this.readPersistedState(this.filePath)
+    if (primary.kind !== 'valid') return null
+    const temporary = this.temporaryPath(snapshotPath)
+    try {
+      await this.durableWrite(temporary, primary.raw)
+      await fs.rename(temporary, snapshotPath)
+      await this.syncDirectory()
+      return snapshotPath
+    } finally {
+      await fs.rm(temporary, { force: true })
+    }
+  }
+
   private async readPersistedState(filePath: string): Promise<PersistedStateRead> {
     try {
       const raw = await fs.readFile(filePath, 'utf8')
@@ -294,6 +326,7 @@ export class StateStore {
   private async archiveCorruptFile(filePath: string): Promise<string> {
     const archivePath = `${filePath}.corrupt-${Date.now()}-${this.writeSequence + 1}`
     await fs.rename(filePath, archivePath)
+    await fs.chmod(archivePath, 0o600)
     return path.basename(archivePath)
   }
 
@@ -309,7 +342,8 @@ export class StateStore {
   }
 
   private async write(state: ConsoleState, rotateBackup: boolean): Promise<void> {
-    await fs.mkdir(path.dirname(this.filePath), { recursive: true })
+    await fs.mkdir(path.dirname(this.filePath), { recursive: true, mode: 0o700 })
+    await fs.chmod(path.dirname(this.filePath), 0o700).catch(() => undefined)
     const primaryTemporaryPath = this.temporaryPath(this.filePath)
     const backupTemporaryPath = this.temporaryPath(this.backupPath)
     try {

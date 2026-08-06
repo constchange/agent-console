@@ -1,20 +1,310 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { _electron as electronLauncher } from 'playwright-core'
 
 const projectRoot = path.resolve(import.meta.dirname, '..')
 const userDataPath = await mkdtemp(path.join(os.tmpdir(), 'agent-console-project-edit-'))
+const userDataRealPath = await realpath(userDataPath)
+const coreLockPath = path.join(userDataPath, 'console-core.lock')
+const runtimePath = path.join(userDataPath, 'xdg-runtime')
 const screenshotPath = path.join(projectRoot, 'artifacts', 'project-edit-v031.png')
 const resultPath = path.join(projectRoot, 'artifacts', 'project-edit-v031-results.json')
 const packagedExecutable = process.env.AGENT_CONSOLE_EXECUTABLE
 
 let application
+let desktopIdentity = null
+let coreIdentity = null
+let coreLockAnchor = null
+let knownCorePid = null
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
 
+function checkpoint(message) {
+  process.stdout.write(`[project-edit] ${new Date().toISOString()} ${message}\n`)
+}
+
+async function withTimeout(label, promise, timeoutMs) {
+  let timer
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} exceeded ${timeoutMs} ms`)), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+function processStartTime(rawStat) {
+  const commandEnd = rawStat.lastIndexOf(')')
+  if (commandEnd < 0) return null
+  return rawStat.slice(commandEnd + 2).trim().split(/\s+/)[19] ?? null
+}
+
+function errorCode(error) {
+  return error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : 'unknown'
+}
+
+async function kernelProcessSnapshot(pid, onFailure) {
+  if (!Number.isInteger(pid) || pid <= 1) {
+    onFailure?.('invalid-pid')
+    return null
+  }
+  try {
+    const [initialDirectory, initialRawStat] = await Promise.all([
+      stat(`/proc/${pid}`),
+      readFile(`/proc/${pid}/stat`, 'utf8'),
+    ])
+    const initialStartTime = processStartTime(initialRawStat)
+    if (!initialStartTime) {
+      onFailure?.('invalid-initial-stat')
+      return null
+    }
+    const [finalDirectory, finalRawStat] = await Promise.all([
+      stat(`/proc/${pid}`),
+      readFile(`/proc/${pid}/stat`, 'utf8'),
+    ])
+    const finalStartTime = processStartTime(finalRawStat)
+    if (!finalStartTime || finalStartTime !== initialStartTime || finalDirectory.uid !== initialDirectory.uid) {
+      onFailure?.('identity-changed-during-read')
+      return null
+    }
+    return { pid, uid: finalDirectory.uid, startTime: finalStartTime }
+  } catch (error) {
+    onFailure?.(`proc-read-${errorCode(error)}`)
+    return null
+  }
+}
+
+async function captureKernelProcessIdentity(pid) {
+  const snapshot = await kernelProcessSnapshot(pid)
+  if (!snapshot) return null
+  if (typeof process.getuid === 'function' && snapshot.uid !== process.getuid()) return null
+  return {
+    pid: snapshot.pid,
+    uid: snapshot.uid,
+    startTime: snapshot.startTime,
+  }
+}
+
+async function matchesProcessIdentity(identity) {
+  if (!identity) return false
+  const snapshot = await kernelProcessSnapshot(identity.pid)
+  return Boolean(snapshot)
+    && snapshot.uid === identity.uid
+    && snapshot.startTime === identity.startTime
+}
+
+async function signalProcess(identity, signal) {
+  if (!await matchesProcessIdentity(identity)) return false
+  try {
+    process.kill(identity.pid, signal)
+    return true
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ESRCH') return false
+    throw error
+  }
+}
+
+async function waitForProcessExit(identity, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (!await matchesProcessIdentity(identity)) return true
+    await delay(100)
+  }
+  return !await matchesProcessIdentity(identity)
+}
+
+async function terminateProcess(identity, label, gracefulTimeoutMs, killTimeoutMs) {
+  if (!identity || !await matchesProcessIdentity(identity)) return false
+
+  checkpoint(`terminating ${label} process ${identity.pid}`)
+  if (!await signalProcess(identity, 'SIGTERM')) return false
+  if (await waitForProcessExit(identity, gracefulTimeoutMs)) return true
+
+  checkpoint(`force-killing ${label} process ${identity.pid}`)
+  if (!await signalProcess(identity, 'SIGKILL')) return true
+  if (!await waitForProcessExit(identity, killTimeoutMs)) {
+    throw new Error(`${label} process ${identity.pid} retained the same verified identity after SIGKILL`)
+  }
+  return true
+}
+
+async function closeApplication(target, identity, label, timeoutMs, requireCleanClose = true) {
+  if (!identity) {
+    if (!target) return
+    throw new Error(`${label} process identity was not captured at launch; refusing process cleanup.`)
+  }
+  if (!await matchesProcessIdentity(identity)) return
+  try {
+    if (target) await withTimeout(`closing ${label}`, target.close(), timeoutMs)
+  } catch (error) {
+    checkpoint(`${label} did not close cleanly: ${error instanceof Error ? error.message : String(error)}`)
+    if (!await matchesProcessIdentity(identity)) {
+      checkpoint(`${label} process already exited with its captured identity; ignoring the stale Playwright close promise`)
+      return
+    }
+    const signalled = await terminateProcess(identity, label, 3_000, 2_000)
+    if (requireCleanClose && signalled) throw error
+  }
+  if (await matchesProcessIdentity(identity)) {
+    const signalled = await terminateProcess(identity, label, 3_000, 2_000)
+    if (requireCleanClose && signalled) {
+      throw new Error(`${label} close returned before its captured process exited.`)
+    }
+  }
+  if (await matchesProcessIdentity(identity)) {
+    throw new Error(`${label} retained its captured PID, UID, and start time after cleanup.`)
+  }
+}
+
+function fileMode(fileStat) {
+  return fileStat.mode & 0o777
+}
+
+function sameFileIdentity(first, second) {
+  return first.dev === second.dev && first.ino === second.ino
+}
+
+function ownedByCurrentUser(fileStat) {
+  return typeof process.getuid !== 'function' || fileStat.uid === process.getuid()
+}
+
+function isPrivateTestRoot(fileStat) {
+  return fileStat.isDirectory()
+    && !fileStat.isSymbolicLink()
+    && fileMode(fileStat) === 0o700
+    && ownedByCurrentUser(fileStat)
+}
+
+function isPrivateCoreLock(fileStat) {
+  return fileStat.isFile()
+    && !fileStat.isSymbolicLink()
+    && fileStat.nlink === 1
+    && fileStat.size > 0
+    && fileStat.size <= 4_096
+    && fileMode(fileStat) === 0o600
+    && ownedByCurrentUser(fileStat)
+}
+
+function parseCoreLockRecord(raw) {
+  try {
+    const record = JSON.parse(raw)
+    if (!Number.isInteger(record.pid) || record.pid <= 1) return null
+    if (typeof record.token !== 'string' || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(record.token)) {
+      return null
+    }
+    if (typeof record.processStartTime !== 'string' || !/^\d+$/.test(record.processStartTime)) return null
+    return {
+      pid: record.pid,
+      token: record.token,
+      processStartTime: record.processStartTime,
+    }
+  } catch {
+    return null
+  }
+}
+
+async function readStableCoreLock() {
+  const [rootBefore, canonicalRoot] = await Promise.all([lstat(userDataPath), realpath(userDataPath)])
+  const rootAfter = await lstat(userDataPath)
+  if (
+    !isPrivateTestRoot(rootBefore)
+    || !isPrivateTestRoot(rootAfter)
+    || !sameFileIdentity(rootBefore, rootAfter)
+    || canonicalRoot !== userDataRealPath
+  ) {
+    throw new Error('The visual test root no longer has its original private directory identity.')
+  }
+
+  const firstStat = await lstat(coreLockPath)
+  if (!isPrivateCoreLock(firstStat)) {
+    throw new Error('The visual test Core lock is not one private same-UID regular file.')
+  }
+  const firstRaw = await readFile(coreLockPath, 'utf8')
+  const middleStat = await lstat(coreLockPath)
+  const secondRaw = await readFile(coreLockPath, 'utf8')
+  const finalStat = await lstat(coreLockPath)
+  if (
+    !isPrivateCoreLock(middleStat)
+    || !isPrivateCoreLock(finalStat)
+    || !sameFileIdentity(firstStat, middleStat)
+    || !sameFileIdentity(firstStat, finalStat)
+    || firstRaw !== secondRaw
+  ) {
+    throw new Error('The visual test Core lock changed while its identity was being captured.')
+  }
+  const record = parseCoreLockRecord(firstRaw)
+  if (!record) throw new Error('The visual test Core lock record is invalid.')
+  return {
+    ...record,
+    device: firstStat.dev,
+    inode: firstStat.ino,
+  }
+}
+
+async function coreLockExists() {
+  try {
+    await lstat(coreLockPath)
+    return true
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return false
+    throw error
+  }
+}
+
+async function captureCoreIdentityFromLock(expectedPid, diagnosticLabel) {
+  const reject = (reason, details = {}) => {
+    if (diagnosticLabel) {
+      checkpoint(`${diagnosticLabel} identity rejected: ${JSON.stringify({ pid: expectedPid ?? null, reason, ...details })}`)
+    }
+    return null
+  }
+  let lock
+  try {
+    lock = await readStableCoreLock()
+  } catch (error) {
+    return reject('lock-validation-failed', { code: errorCode(error) })
+  }
+  if (expectedPid !== null && expectedPid !== undefined && lock.pid !== expectedPid) {
+    return reject('health-lock-pid-mismatch', { healthPid: expectedPid, lockPid: lock.pid })
+  }
+  const pid = expectedPid ?? lock.pid
+  let snapshotFailure = 'snapshot-unavailable'
+  const snapshot = await kernelProcessSnapshot(pid, (reason) => { snapshotFailure = reason })
+  if (!snapshot) return reject(snapshotFailure)
+  if (typeof process.getuid === 'function' && snapshot.uid !== process.getuid()) {
+    return reject('process-uid-mismatch', { processUid: snapshot.uid, currentUid: process.getuid() })
+  }
+  if (snapshot.startTime !== lock.processStartTime) {
+    return reject('process-start-time-mismatch')
+  }
+  return {
+    identity: {
+      pid: snapshot.pid,
+      uid: snapshot.uid,
+      startTime: snapshot.startTime,
+    },
+    lock,
+  }
+}
+
+function sameCoreLockAnchor(first, second) {
+  return first.device === second.device
+    && first.inode === second.inode
+    && first.token === second.token
+    && first.pid === second.pid
+    && first.processStartTime === second.processStartTime
+}
+
 async function launchApplication() {
-  return electronLauncher.launch({
+  await mkdir(runtimePath, { recursive: true, mode: 0o700 })
+  const launched = await electronLauncher.launch({
     executablePath: packagedExecutable ?? path.join(projectRoot, 'node_modules', '.bin', 'electron'),
     args: [
       ...(packagedExecutable ? [] : ['.']),
@@ -27,19 +317,51 @@ async function launchApplication() {
     env: {
       ...process.env,
       ...(packagedExecutable ? { APPIMAGE_EXTRACT_AND_RUN: '1' } : {}),
-      XDG_CACHE_HOME: '/tmp/agent-console-project-edit-cache',
-      XDG_CONFIG_HOME: '/tmp/agent-console-project-edit-config',
+      AGENT_CONSOLE_FORCE_DETACHED_CORE: '1',
+      XDG_CACHE_HOME: path.join(userDataPath, 'xdg-cache'),
+      XDG_CONFIG_HOME: path.join(userDataPath, 'xdg-config'),
+      XDG_DATA_HOME: path.join(userDataPath, 'xdg-data'),
+      XDG_RUNTIME_DIR: runtimePath,
     },
     timeout: 30_000,
   })
+  application = launched
+  let childPid = null
+  try {
+    childPid = launched.process()?.pid ?? null
+  } catch {
+    // The explicit failure below preserves the launched application reference
+    // so top-level cleanup can close it without guessing a process.
+  }
+  const identity = await captureKernelProcessIdentity(childPid)
+  if (!identity) throw new Error('The desktop process identity could not be captured immediately after launch.')
+  desktopIdentity = identity
+  return launched
+}
+
+function forwardApplicationOutput(target, label) {
+  const child = target.process()
+  child?.stdout?.on('data', (chunk) => process.stdout.write(`[${label}:stdout] ${String(chunk)}`))
+  child?.stderr?.on('data', (chunk) => process.stderr.write(`[${label}:stderr] ${String(chunk)}`))
 }
 
 async function main() {
+  checkpoint('launching first desktop')
   application = await launchApplication()
+  forwardApplicationOutput(application, 'first-desktop')
+  application.on('console', (message) => {
+    process.stdout.write(`[electron:${message.type()}] ${message.text()}\n`)
+  })
 
-  const page = await application.firstWindow()
+  const page = await withTimeout('waiting for the first desktop window', application.firstWindow(), 45_000)
   await page.setViewportSize({ width: 3_840, height: 2_160 })
   await page.waitForSelector('.tree-project__main')
+  const firstCorePid = await page.evaluate(() => window.agentConsole.getCoreHealth().then((health) => health.pid))
+  knownCorePid = firstCorePid
+  const firstCore = await captureCoreIdentityFromLock(firstCorePid, 'initial Core')
+  if (!firstCore) throw new Error(`Core process ${firstCorePid} is not the isolated Core for this visual test`)
+  coreIdentity = firstCore.identity
+  coreLockAnchor = firstCore.lock
 
   let javascriptDialogCount = 0
   page.on('dialog', async (dialog) => {
@@ -283,21 +605,47 @@ async function main() {
   await page.getByRole('button', { name: 'Save Project', exact: true }).click()
   await page.locator('.modal').waitFor({ state: 'detached' })
 
-  await page.evaluate(async () => {
+  const queuedSaveBarrier = await page.evaluate(async () => {
     const bootstrap = await window.agentConsole.getBootstrap()
+    const before = await window.agentConsole.stateBarrier()
     for (let index = 0; index < 20; index += 1) {
       void window.agentConsole.saveState({
         ...bootstrap.state,
         projects: bootstrap.state.projects.map((project, projectIndex) => (
           projectIndex === 0 ? { ...project, name: `Shutdown Flush ${index}` } : project
         )),
-      })
+      }).catch(() => undefined)
     }
+    const after = await window.agentConsole.stateBarrier()
+    return { before, after }
   })
-  await application.close()
+  if (queuedSaveBarrier.after - queuedSaveBarrier.before !== 20) {
+    throw new Error(`State-save IPC barrier observed an unexpected sequence: ${JSON.stringify(queuedSaveBarrier)}`)
+  }
+  checkpoint(`state-save barrier accepted ${queuedSaveBarrier.after - queuedSaveBarrier.before} queued saves`)
+  checkpoint('closing first desktop after 20 queued saves')
+  const firstApplication = application
+  const firstDesktopIdentity = desktopIdentity
+  await closeApplication(firstApplication, firstDesktopIdentity, 'the first desktop', 40_000)
+  if (application === firstApplication) application = undefined
+  if (desktopIdentity === firstDesktopIdentity) desktopIdentity = null
+  checkpoint('first desktop closed; launching replacement desktop')
   application = await launchApplication()
-  const reopenedPage = await application.firstWindow()
+  forwardApplicationOutput(application, 'replacement-desktop')
+  application.on('console', (message) => {
+    process.stdout.write(`[electron:${message.type()}] ${message.text()}\n`)
+  })
+  const reopenedPage = await withTimeout('waiting for the replacement desktop window', application.firstWindow(), 45_000)
   await reopenedPage.waitForSelector('.tree-project__main')
+  const reopenedCorePid = await reopenedPage.evaluate(() => window.agentConsole.getCoreHealth().then((health) => health.pid))
+  knownCorePid = reopenedCorePid
+  const reopenedCore = await captureCoreIdentityFromLock(reopenedCorePid, 'reopened Core')
+  if (!reopenedCore) throw new Error(`Core process ${reopenedCorePid} is not the isolated Core for this visual test`)
+  if (coreLockAnchor && !sameCoreLockAnchor(coreLockAnchor, reopenedCore.lock)) {
+    throw new Error('Console Core changed identity while the desktop was restarting.')
+  }
+  coreIdentity = reopenedCore.identity
+  coreLockAnchor = reopenedCore.lock
   const flushedOnQuit = await reopenedPage.locator('.tree-project__main').filter({ hasText: 'Shutdown Flush 19' }).count() === 1
   if (!flushedOnQuit) throw new Error('Queued state changes were lost during application shutdown')
   await reopenedPage.evaluate(async () => {
@@ -334,9 +682,78 @@ async function main() {
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
 }
 
-try {
-  await main()
-} finally {
-  await application?.close().catch(() => undefined)
+async function cleanupVisualRegressionProcesses() {
+  checkpoint('cleaning up visual regression processes')
+  const finalApplication = application
+  const finalDesktopIdentity = desktopIdentity
+  const desktopWasLaunched = Boolean(finalApplication)
+  let unverifiedCoreLockObserved = false
+  if (await coreLockExists()) {
+    const preCloseCore = await captureCoreIdentityFromLock(knownCorePid, 'pre-close cleanup Core')
+    if (!preCloseCore) {
+      unverifiedCoreLockObserved = true
+    } else {
+      if (coreLockAnchor && !sameCoreLockAnchor(coreLockAnchor, preCloseCore.lock)) {
+        throw new Error('The test Core lock changed identity before cleanup; refusing to signal it.')
+      }
+      coreIdentity = preCloseCore.identity
+      coreLockAnchor = preCloseCore.lock
+    }
+  }
+  await closeApplication(finalApplication, finalDesktopIdentity, 'the final desktop', 40_000, false)
+  if (finalDesktopIdentity && await matchesProcessIdentity(finalDesktopIdentity)) {
+    throw new Error('The final desktop process is still live; refusing to stop Core or remove its private root.')
+  }
+  if (application === finalApplication) application = undefined
+  if (desktopIdentity === finalDesktopIdentity) desktopIdentity = null
+  if (await coreLockExists()) {
+    const lockedCore = await captureCoreIdentityFromLock(knownCorePid ?? coreIdentity?.pid, 'cleanup Core')
+    if (!lockedCore) {
+      throw new Error('The test Core lock exists but could not be verified; refusing process cleanup.')
+    } else {
+      if (coreLockAnchor && !sameCoreLockAnchor(coreLockAnchor, lockedCore.lock)) {
+        throw new Error('The test Core lock changed identity before cleanup; refusing to signal it.')
+      }
+      coreIdentity = lockedCore.identity
+      coreLockAnchor = lockedCore.lock
+      unverifiedCoreLockObserved = false
+    }
+  } else if (unverifiedCoreLockObserved) {
+    throw new Error('An unverified test Core lock disappeared during cleanup; refusing to remove its private root.')
+  } else if (coreIdentity && await matchesProcessIdentity(coreIdentity)) {
+    throw new Error('The verified test Core is still live after losing its private lock; refusing process cleanup.')
+  }
+  if (coreIdentity) {
+    await terminateProcess(coreIdentity, 'the isolated Core', 10_000, 2_000)
+    if (await matchesProcessIdentity(coreIdentity)) {
+      throw new Error(`Verified test Core process ${coreIdentity.pid} is still present.`)
+    }
+  } else if (desktopWasLaunched) {
+    throw new Error('The desktop launched without a verifiable Core lock; refusing to remove its private root.')
+  }
   await rm(userDataPath, { recursive: true, force: true })
 }
+
+let mainFailure
+try {
+  await main()
+} catch (error) {
+  mainFailure = error
+}
+
+let cleanupFailure
+try {
+  await cleanupVisualRegressionProcesses()
+} catch (error) {
+  cleanupFailure = error
+}
+
+if (mainFailure && cleanupFailure) {
+  throw new AggregateError(
+    [mainFailure, cleanupFailure],
+    'The visual regression failed and its isolated-process cleanup also failed.',
+    { cause: mainFailure },
+  )
+}
+if (mainFailure) throw mainFailure
+if (cleanupFailure) throw cleanupFailure

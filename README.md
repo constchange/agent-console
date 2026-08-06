@@ -6,6 +6,12 @@ Agent Console 是运行在 Linux Mint 上的本地 AI Team 控制中心。它不
 
 ## 当前版本已经实现
 
+- 新增 **Local Console Core**：它以当前 Linux 用户身份在后台运行；关闭桌面窗口后，本机扫描和精简任务状态仍会继续。服务使用 `KillMode=process`，停止或重启 Core 时不会主动向 tmux Session 与 Agent 子进程发送终止信号。
+- Core 是 `mission-control-state.json` 的唯一写入者。桌面端通过带 SHA-256 revision 的本机协议提交修改，不会在 Core 暂时离线时偷偷退回第二套写盘逻辑。
+- 生产安装包中的桌面端与 Core 只通过当前用户私有的 Unix Socket 通信；目录权限 `0700`、Socket 权限 `0600`，不监听 localhost、局域网或公网 TCP 端口。`npm run dev` 使用的本机 Vite 开发端口不在此承诺内。
+- 首次升级会保留一份 `mission-control-state.pre-core-v0.4.json`，原有原子写入、最近有效备份和损坏文件保护继续生效。
+- 当前自动扫描写入本机 SQLite 任务账本时，只保存 Agent 名称、类型、状态和固定公开摘要，不写入终端输出、命令、工作路径、进程参数、tmux 名称或模型推理。
+- Settings 可直接查看 Core 连接、版本、协议和 Unix-only 本地模式声明；底部状态栏会显示连接、重连、离线或版本不匹配。正式安装包的零 TCP 监听由发布验收独立检查。
 - Settings 内置应用更新中心：自动或手动检查新版，显示更新说明与下载进度，下载完成后可直接重启并安装。
 - AppImage 与 deb 都支持应用内更新；AppImage 直接自我替换，deb 安装时由 Linux 弹出系统授权窗口。
 - 主分支中的版本号或发布说明更新后，GitHub 会自动测试、打包并发布 AppImage、deb 与更新元数据；版本标签仍可用于重新触发核验。
@@ -111,7 +117,7 @@ v0.3.0 是加入应用内更新功能的第一个版本，因此从 v0.2.2 升�
 5. 下载完成后点击 **Restart and update**。
 6. AppImage 会自动替换并重新打开；deb 可能弹出 Linux 系统密码窗口，确认后即可完成。
 
-更新只替换应用程序，不会删除 `~/.config/agent-console/mission-control-state.json`，因此 Project、Agent、字号和主题都会保留。每次成功保存还会维护一个 `mission-control-state.json.bak` 作为最近有效备份。
+更新只替换应用程序与本机 Core，不会删除 `~/.config/agent-console/mission-control-state.json`，因此 Project、Agent、字号和主题都会保留。每次成功保存还会维护一个 `mission-control-state.json.bak` 作为最近有效备份；首次启用 Core 还会额外保留一次升级前快照。
 
 ## 状态是怎样判断的
 
@@ -135,7 +141,7 @@ Agent Console 通过唯一 Terminal Title 和 `wmctrl` 查找窗口；发现窗�
 
 ## 当前明确不做的事情
 
-第一版刻意不包含：聊天、内嵌终端、远程主机、AI 自动编排、任务调度和 Agent 间通信。Agent Console 只负责管理、显示和切换。
+v0.4.0 只完成电脑端基础层，不包含 Supabase 注册登录、设备配对、VPS Gateway、手机 App、推送、局域网或公网端口。Core 中为后续阶段预留了结构化任务接口和脱敏状态边界，但所有远程写操作仍处于禁用状态；当前产品继续只负责本机管理、显示和终端切换。
 
 ## 开发命令
 
@@ -152,7 +158,8 @@ npm run release:linux   # 测试、构建并发布 GitHub Release（需要发布
 主要结构：
 
 ```text
-electron/               Electron 主进程、本机扫描、终端控制、应用更新
+core/                   常驻本机 Core、状态写入、扫描、任务账本、Unix Socket 协议
+electron/               桌面窗口、GUI 终端适配、Core 客户端、应用更新
 shared/                 主进程与界面共用的数据类型
 src/                    React Dashboard
 tests/                  状态判断、进程解析、配置修复测试
@@ -163,7 +170,11 @@ resources/              应用图标
 
 - Electron 界面启用 `contextIsolation`，不直接获得 Node.js 或系统命令权限。
 - 界面只能调用预先定义的操作：读取状态、保存配置、刷新、打开/聚焦/关闭终端、恢复 Project，以及检查、下载和安装受信任的正式更新。
+- Core 只接受经过版本握手和方法白名单验证的本机 RPC；单条消息限制为 1 MiB，并限制单个连接的请求速率与并发数。
+- Core 的 Unix Socket 只允许当前 Linux 用户访问。生产安装包没有 Agent Console HTTP、WebSocket 或 TCP 监听，因此安装 v0.4.0 不会开放 4000 或任何新网络端口。
+- `systemd --user` 服务启用 `NoNewPrivileges`；需要 `sudo` 或 `pkexec` 的维护工作应在 Agent Console 之外手动执行，不把 Core 当作提权入口。
+- 取得同一 Linux 账号权限的恶意程序本来就能读取该账号文件并控制其进程；Unix Socket 不把同一账号内部当作额外安全边界。手机阶段仍需另外加入 Supabase 身份、现场配对、设备撤销和 Gateway 授权。
 - 应用启动后约 15 秒检查 GitHub Releases，之后每 6 小时检查一次；只读取版本与安装包信息，不上传 Project 或 Agent 数据。
 - 更新包通过 HTTPS 下载，并按发布元数据中的 SHA-512 检查下载完整性；检查通过后才会出现安装按钮。
-- 配置通常保存在 `~/.config/agent-console/mission-control-state.json`。
+- 配置通常保存在 `~/.config/agent-console/mission-control-state.json`；Core 的本机任务账本保存在同目录的 `console-core.sqlite`。
 - “Close window”只关闭终端窗口；使用 tmux 时不会停止里面的任务。

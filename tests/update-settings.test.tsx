@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
-import type { ConsoleSettings, UpdateState } from '../shared/types'
+import type { ConsoleSettings, CoreConnectionState, CoreHealth, UpdateState } from '../shared/types'
 import { SettingsEditor } from '../src/components/Editors'
 
 const settings: ConsoleSettings = {
@@ -11,10 +11,28 @@ const settings: ConsoleSettings = {
   theme: 'navy-gold',
 }
 
+const coreHealth: CoreHealth = {
+  appVersion: '0.4.0',
+  protocolVersion: 1,
+  startedAt: '2026-08-06T00:00:00.000Z',
+  pid: 4_200,
+  transport: 'unix',
+  stateRevision: 'revision-1',
+  structuredCodex: 'deferred',
+  tcpListening: false,
+}
+
+const coreConnection: CoreConnectionState = {
+  phase: 'connected',
+  message: 'Console Core is connected over a local Unix socket.',
+  coreVersion: '0.4.0',
+  protocolVersion: 1,
+}
+
 function updateState(overrides: Partial<UpdateState>): UpdateState {
   return {
     phase: 'idle',
-    currentVersion: '0.3.1',
+    currentVersion: '0.4.0',
     availableVersion: null,
     releaseName: null,
     releaseNotes: null,
@@ -36,6 +54,8 @@ function renderUpdates(state: UpdateState): string {
       settings={settings}
       availableTerminals={[]}
       updateState={state}
+      coreHealth={coreHealth}
+      coreConnection={coreConnection}
       onSave={vi.fn()}
       onPreview={vi.fn()}
       onClose={vi.fn()}
@@ -48,17 +68,27 @@ function renderUpdates(state: UpdateState): string {
 }
 
 describe('application update settings', () => {
+  it('shows the local-only Console Core boundary', () => {
+    const markup = renderUpdates(updateState({}))
+
+    expect(markup).toContain('Local Console Core')
+    expect(markup).toContain('Connected')
+    expect(markup).toContain('Unix socket')
+    expect(markup).toContain('No TCP listener')
+    expect(markup).toContain('restricted to your Linux user')
+  })
+
   it('shows a download action and release notes when an update is available', () => {
     const markup = renderUpdates(updateState({
       phase: 'available',
-      availableVersion: '0.3.2',
+      availableVersion: '0.4.1',
       releaseNotes: 'Improves terminal discovery.',
-      message: 'Agent Console v0.3.2 is available.',
+      message: 'Agent Console v0.4.1 is available.',
       canCheck: true,
       canDownload: true,
     }))
 
-    expect(markup).toContain('Version 0.3.2 is available')
+    expect(markup).toContain('Version 0.4.1 is available')
     expect(markup).toContain('Download update')
     expect(markup).toContain('Improves terminal discovery.')
   })
@@ -66,7 +96,7 @@ describe('application update settings', () => {
   it('shows progress while downloading and restart only after verification', () => {
     const downloading = renderUpdates(updateState({
       phase: 'downloading',
-      availableVersion: '0.3.2',
+      availableVersion: '0.4.1',
       progress: { percent: 42.5, transferred: 42_500_000, total: 100_000_000, bytesPerSecond: 2_000_000 },
       canCheck: false,
     }))
@@ -76,7 +106,7 @@ describe('application update settings', () => {
 
     const downloaded = renderUpdates(updateState({
       phase: 'downloaded',
-      availableVersion: '0.3.2',
+      availableVersion: '0.4.1',
       canCheck: false,
       canInstall: true,
     }))
