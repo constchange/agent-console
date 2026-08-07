@@ -46,6 +46,18 @@ describe('status inference', () => {
   it('honors a manual override', () => {
     expect(inferStatus(null, '', 'codex', 'finished')).toBe('finished')
   })
+
+  it('recognizes conservative Chinese status signals', () => {
+    expect(inferStatus(processInfo(), '正在分析仓库结构', 'codex')).toBe('thinking')
+    expect(inferStatus(processInfo(), '等待用户确认后继续', 'codex')).toBe('waiting')
+    expect(inferStatus(processInfo(), '任务已完成', 'codex')).toBe('finished')
+    expect(inferStatus(processInfo(), '测试失败：无法连接数据库', 'codex')).toBe('error')
+    expect(inferStatus(processInfo(), '测试已完成，共 2 个失败', 'codex')).toBe('error')
+    expect(inferStatus(processInfo(), '检查完成，当前没有错误', 'codex')).toBe('idle')
+    expect(inferStatus(processInfo(), '检查完成，没有发生错误', 'codex')).toBe('idle')
+    expect(inferStatus(processInfo(), '尚未全部测试通过', 'codex')).toBe('idle')
+    expect(inferStatus(processInfo(), '测试已完成，共 0 个失败', 'codex')).toBe('finished')
+  })
 })
 
 describe('system output parsers', () => {

@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { ConsoleState } from '../shared/types'
-import { createDefaultState, sanitizeState, StateStore } from '../core/services/state-store'
+import { createDefaultState, detectDefaultLanguage, sanitizeState, StateStore } from '../core/services/state-store'
 
 async function temporaryDirectory(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), 'agent-console-state-test-'))
@@ -20,8 +20,19 @@ describe('state sanitization', () => {
     const state = createDefaultState()
     expect(state.projects.map((project) => project.name)).toEqual(['Product', 'Sales', 'Management'])
     expect(state.agents).toHaveLength(6)
+    expect(state.settings.language).toBe('en')
     expect(state.settings.fontSizePx).toBe(25)
     expect(state.settings.theme).toBe('navy-gold')
+  })
+
+  it('uses the Linux locale for the first launch and creates localized examples', () => {
+    expect(detectDefaultLanguage({ LANG: 'zh_CN.UTF-8' }, 'en-US')).toBe('zh-CN')
+    expect(detectDefaultLanguage({ LANG: 'C.UTF-8' }, 'zh-CN')).toBe('en')
+
+    const state = createDefaultState('zh-CN')
+    expect(state.projects.map((project) => project.name)).toEqual(['产品', '销售', '管理'])
+    expect(state.agents.map((agent) => agent.name)).toContain('产品规划')
+    expect(state.settings.language).toBe('zh-CN')
   })
 
   it('repairs invalid fields without losing valid records', () => {
@@ -43,6 +54,7 @@ describe('state sanitization', () => {
       projects: [{ id: 'project', name: 'Project' }],
       agents: [],
       settings: {
+        language: 'zh-CN',
         defaultTerminal: 'auto',
         scanIntervalMs: 2500,
         compactMode: false,
@@ -52,6 +64,24 @@ describe('state sanitization', () => {
     })
     expect(state.settings.fontSizePx).toBe(5)
     expect(state.settings.theme).toBe('persian-night')
+    expect(state.settings.language).toBe('zh-CN')
+  })
+
+  it('migrates a v0.5 state without a language field without losing data', () => {
+    const state = sanitizeState({
+      version: 1,
+      projects: [{ id: 'existing', name: 'Existing Project' }],
+      agents: [],
+      settings: {
+        defaultTerminal: 'auto',
+        scanIntervalMs: 2500,
+        compactMode: true,
+        fontSizePx: 25,
+        theme: 'navy-gold',
+      },
+    }, 'zh-CN')
+    expect(state.projects[0].name).toBe('Existing Project')
+    expect(state.settings.language).toBe('zh-CN')
   })
 })
 

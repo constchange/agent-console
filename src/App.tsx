@@ -32,6 +32,7 @@ import { AgentEditor, ProjectEditor, SettingsEditor } from './components/Editors
 import { Sidebar } from './components/Sidebar'
 import { getApi } from './lib/api'
 import { STATUS_META, uniqueId } from './lib/format'
+import { createI18n, detectBrowserLanguage, I18nProvider, type I18n } from './lib/i18n'
 
 type EditorState =
   | { type: 'agent'; initial: Partial<AgentConfig>; existing: boolean }
@@ -52,7 +53,7 @@ const CORE_CONNECTION_LABELS: Record<CoreConnectionPhase, string> = {
   incompatible: 'VERSION MISMATCH',
 }
 
-function hydrateSnapshot(state: ConsoleState, snapshot: RuntimeSnapshot): RuntimeSnapshot {
+function hydrateSnapshot(state: ConsoleState, snapshot: RuntimeSnapshot, i18n: I18n): RuntimeSnapshot {
   const runtimeById = new Map(snapshot.agents.map((agent) => [agent.id, agent]))
   const now = new Date().toISOString()
   const agents: RuntimeAgent[] = state.agents.map((config) => {
@@ -66,7 +67,7 @@ function hydrateSnapshot(state: ConsoleState, snapshot: RuntimeSnapshot): Runtim
       runtimeSeconds: 0,
       status: config.statusOverride ?? 'offline',
       lastUpdated: now,
-      lastOutput: 'No live process matched',
+      lastOutput: i18n.t('No live process matched'),
       processName: '',
       processState: '',
       terminalOpen: false,
@@ -117,6 +118,8 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false)
   const [toast, setToast] = useState<ToastState | null>(null)
   const [appearancePreview, setAppearancePreview] = useState<ConsoleSettings | null>(null)
+  const language = appearancePreview?.language ?? state?.settings.language ?? detectBrowserLanguage()
+  const i18n = useMemo(() => createI18n(language), [language])
   const toastTimer = useRef<number | null>(null)
   const editorOpenRef = useRef(false)
   const queuedSnapshotRef = useRef<RuntimeSnapshot | null>(null)
@@ -125,6 +128,8 @@ export default function App() {
   const durableStateRef = useRef<ConsoleState | null>(null)
   const latestSaveRef = useRef(0)
   const latestDurableSaveRef = useRef(0)
+  const i18nRef = useRef(i18n)
+  i18nRef.current = i18n
   const nativeZoomAvailable = Boolean(window.agentConsole)
   const effectiveFontSize = appearancePreview?.fontSizePx ?? state?.settings.fontSizePx ?? 13
   const uiScale = effectiveFontSize / 13
@@ -134,6 +139,8 @@ export default function App() {
     if (toastTimer.current) window.clearTimeout(toastTimer.current)
     toastTimer.current = window.setTimeout(() => setToast(null), 3_800)
   }, [])
+
+  const localizeMessage = useCallback((message: string) => i18nRef.current.message(message), [])
 
   useEffect(() => {
     let active = true
@@ -149,7 +156,7 @@ export default function App() {
       setAppVersion(bootstrap.appVersion)
       setUpdateState(bootstrap.updateState)
       setCoreHealth(bootstrap.core)
-      if (showNotice && bootstrap.stateNotice) notify(bootstrap.stateNotice, 'info')
+      if (showNotice && bootstrap.stateNotice) notify(localizeMessage(bootstrap.stateNotice), 'info')
     }
     const synchronizeBootstrap = async (sequence: number, showNotice: boolean) => {
       let lastError: unknown = null
@@ -172,7 +179,7 @@ export default function App() {
         }
       }
       if (active && sequence === bootstrapSequence && lastError) {
-        notify(lastError instanceof Error ? lastError.message : String(lastError), 'error')
+        notify(localizeMessage(lastError instanceof Error ? lastError.message : String(lastError)), 'error')
       }
     }
     const initialSequence = ++bootstrapSequence
@@ -204,16 +211,16 @@ export default function App() {
       unsubscribeCore()
       if (toastTimer.current) window.clearTimeout(toastTimer.current)
     }
-  }, [api, notify])
+  }, [api, localizeMessage, notify])
 
   useEffect(() => {
     if (!updateState) return
     const previous = previousUpdatePhaseRef.current
     previousUpdatePhaseRef.current = updateState.phase
     if (previous === updateState.phase) return
-    if (updateState.phase === 'available') notify(`Agent Console v${updateState.availableVersion} is available`, 'info')
-    if (updateState.phase === 'downloaded') notify('Update downloaded — restart when you are ready', 'success')
-  }, [notify, updateState])
+    if (updateState.phase === 'available') notify(localizeMessage(`Agent Console v${updateState.availableVersion} is available`), 'info')
+    if (updateState.phase === 'downloaded') notify(localizeMessage('Update downloaded — restart when you are ready'), 'success')
+  }, [localizeMessage, notify, updateState])
 
   useEffect(() => {
     editorOpenRef.current = Boolean(editor)
@@ -230,9 +237,9 @@ export default function App() {
   useEffect(() => {
     if (!nativeZoomAvailable) return
     void api.setZoomFactor(uiScale).catch((error) => {
-      notify(error instanceof Error ? error.message : String(error), 'error')
+      notify(localizeMessage(error instanceof Error ? error.message : String(error)), 'error')
     })
-  }, [api, nativeZoomAvailable, notify, uiScale])
+  }, [api, localizeMessage, nativeZoomAvailable, notify, uiScale])
 
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
@@ -264,7 +271,7 @@ export default function App() {
         if (saveId === latestSaveRef.current) {
           stateRef.current = saved
           setState(saved)
-          if (successMessage) notify(successMessage, 'success')
+          if (successMessage) notify(createI18n(saved.settings.language).message(successMessage), 'success')
         }
       } catch (error) {
         if (saveId === latestSaveRef.current) {
@@ -274,7 +281,8 @@ export default function App() {
             setState(durable)
           }
           const message = error instanceof Error ? error.message : String(error)
-          notify(`Changes were not saved. ${message}`, 'error')
+          const notificationI18n = createI18n(durable?.settings.language ?? next.settings.language)
+          notify(notificationI18n.t('Changes were not saved. {{message}}', { message: notificationI18n.message(message) }), 'error')
         }
         throw error
       }
@@ -284,15 +292,17 @@ export default function App() {
 
   if (!state || !snapshot || !updateState || !coreHealth) {
     return (
-      <div className="boot-screen">
-        <div className="brand-mark brand-mark--large"><span /></div>
-        <strong>AGENT CONSOLE</strong>
-        <small>SCANNING LOCAL SYSTEM</small>
-      </div>
+      <I18nProvider language={language}>
+        <div className="boot-screen">
+          <div className="brand-mark brand-mark--large"><span /></div>
+          <strong>{i18n.t('AGENT CONSOLE')}</strong>
+          <small>{i18n.t('SCANNING LOCAL SYSTEM')}</small>
+        </div>
+      </I18nProvider>
     )
   }
 
-  const hydrated = hydrateSnapshot(state, snapshot)
+  const hydrated = hydrateSnapshot(state, snapshot, i18n)
   const globalActive = hydrated.agents.filter((agent) => agent.status === 'running' || agent.status === 'thinking').length
   const globalWaiting = hydrated.agents.filter((agent) => agent.status === 'waiting').length
   const globalErrors = hydrated.agents.filter((agent) => agent.status === 'error').length
@@ -313,19 +323,21 @@ export default function App() {
 
   const openAgent = async (agentId: string) => {
     const result = await api.openAgent(agentId)
-    notify(result.message, result.ok ? 'success' : 'error')
+    notify(localizeMessage(result.message), result.ok ? 'success' : 'error')
   }
 
   const closeAgentTerminal = async (agentId: string) => {
     const result = await api.closeAgentTerminal(agentId)
-    notify(result.message, result.ok ? 'success' : 'error')
+    notify(localizeMessage(result.message), result.ok ? 'success' : 'error')
   }
 
   const restoreProject = async (projectId: string) => {
     const results = await api.restoreProject(projectId)
     const failures = results.filter((result) => !result.ok)
     notify(
-      failures.length ? failures[0].message : `${results.length} Agent${results.length === 1 ? '' : 's'} restored`,
+      failures.length
+        ? localizeMessage(failures[0].message)
+        : i18n.t(results.length === 1 ? '{{count}} Agent restored' : '{{count}} Agents restored', { count: results.length }),
       failures.length ? 'error' : 'success',
     )
   }
@@ -334,9 +346,9 @@ export default function App() {
     setRefreshing(true)
     try {
       setSnapshot(await api.refresh())
-      notify('Local process scan complete', 'success')
+      notify(i18n.t('Local process scan complete'), 'success')
     } catch (error) {
-      notify(error instanceof Error ? error.message : String(error), 'error')
+      notify(localizeMessage(error instanceof Error ? error.message : String(error)), 'error')
     } finally {
       setRefreshing(false)
     }
@@ -346,7 +358,7 @@ export default function App() {
     try {
       setUpdateState(await api.checkForUpdates())
     } catch (error) {
-      notify(error instanceof Error ? error.message : String(error), 'error')
+      notify(localizeMessage(error instanceof Error ? error.message : String(error)), 'error')
     }
   }
 
@@ -354,16 +366,16 @@ export default function App() {
     try {
       setUpdateState(await api.downloadUpdate())
     } catch (error) {
-      notify(error instanceof Error ? error.message : String(error), 'error')
+      notify(localizeMessage(error instanceof Error ? error.message : String(error)), 'error')
     }
   }
 
   const installUpdate = async () => {
     try {
       const result = await api.installUpdate()
-      if (!result.ok) notify(result.message, 'error')
+      if (!result.ok) notify(localizeMessage(result.message), 'error')
     } catch (error) {
-      notify(error instanceof Error ? error.message : String(error), 'error')
+      notify(localizeMessage(error instanceof Error ? error.message : String(error)), 'error')
     }
   }
 
@@ -440,7 +452,7 @@ export default function App() {
   }
 
   const editAgent = (agent: AgentConfig) => setEditor({ type: 'agent', initial: agent, existing: true })
-  const breadcrumb = selectedProject ? selectedProject.name : 'All Projects'
+  const breadcrumb = selectedProject ? selectedProject.name : i18n.t('All Projects')
   const displaySettings = appearancePreview ?? state.settings
   const appearanceStyle = {
     '--ui-scale': nativeZoomAvailable ? 1 : uiScale,
@@ -448,11 +460,12 @@ export default function App() {
   } as CSSProperties
 
   return (
-    <div
-      className={`app-shell ${state.settings.compactMode ? 'is-compact' : ''} ${nativeZoomAvailable ? 'uses-native-zoom' : 'uses-css-zoom'}`}
-      data-theme={displaySettings.theme}
-      style={appearanceStyle}
-    >
+    <I18nProvider language={language}>
+      <div
+        className={`app-shell ${state.settings.compactMode ? 'is-compact' : ''} ${nativeZoomAvailable ? 'uses-native-zoom' : 'uses-css-zoom'}`}
+        data-theme={displaySettings.theme}
+        style={appearanceStyle}
+      >
       <Sidebar
         state={state}
         snapshot={hydrated}
@@ -472,19 +485,19 @@ export default function App() {
 
       <div className="main-column">
         <header className="topbar">
-          <div className="breadcrumbs"><Command size={14} /><span>Mission Control</span><ChevronRight size={13} /><strong>{breadcrumb}</strong></div>
+          <div className="breadcrumbs"><Command size={14} /><span>{i18n.t('Mission Control')}</span><ChevronRight size={13} /><strong>{breadcrumb}</strong></div>
           <div className="topbar__status">
-            <span className="top-stat"><i style={{ background: STATUS_META.running.color }} />{globalActive} active</span>
-            <span className="top-stat"><i style={{ background: STATUS_META.waiting.color }} />{globalWaiting} waiting</span>
-            {globalErrors > 0 && <span className="top-stat top-stat--error"><TriangleAlert size={13} />{globalErrors} error{globalErrors === 1 ? '' : 's'}</span>}
+            <span className="top-stat"><i style={{ background: STATUS_META.running.color }} />{i18n.t('{{count}} active', { count: globalActive })}</span>
+            <span className="top-stat"><i style={{ background: STATUS_META.waiting.color }} />{i18n.t('{{count}} waiting', { count: globalWaiting })}</span>
+            {globalErrors > 0 && <span className="top-stat top-stat--error"><TriangleAlert size={13} />{i18n.t(globalErrors === 1 ? '{{count}} error' : '{{count}} errors', { count: globalErrors })}</span>}
             <span className="top-separator" />
-            <button className="topbar-button" onClick={() => void refresh()} title="Scan now"><RefreshCw size={15} className={refreshing ? 'is-spinning' : ''} /></button>
-            <button className="discover-button" onClick={() => setDiscoveryOpen(true)}><Radar size={15} /><span>Discover</span><b>{hydrated.discovered.length}</b></button>
+            <button className="topbar-button" onClick={() => void refresh()} title={i18n.t('Scan now')}><RefreshCw size={15} className={refreshing ? 'is-spinning' : ''} /></button>
+            <button className="discover-button" onClick={() => setDiscoveryOpen(true)}><Radar size={15} /><span>{i18n.t('Discover')}</span><b>{hydrated.discovered.length}</b></button>
             <button
               className={`topbar-button update-status-button ${updateAttention ? 'has-update' : ''}`}
-              title={updateAttention ? updateState.message : 'Application updates'}
+              title={updateAttention ? i18n.message(updateState.message) : i18n.t('Application updates')}
               onClick={openSettings}
-              aria-label="Open application updates"
+              aria-label={i18n.t('Open application updates')}
             >
               {updateAttention ? <Download size={15} /> : <Bell size={15} />}
               {updateAttention && <i />}
@@ -508,16 +521,16 @@ export default function App() {
         <footer className="app-statusbar">
           <span
             className={`local-core-status local-core-status--${coreConnection.phase}`}
-            title={coreConnection.message}
+            title={i18n.message(coreConnection.message)}
             role="status"
             aria-live="polite"
           >
-            <i /> LOCAL CORE · {CORE_CONNECTION_LABELS[coreConnection.phase]}
+            <i /> {i18n.t('LOCAL CORE')} · {i18n.t(CORE_CONNECTION_LABELS[coreConnection.phase])}
           </span>
           <span><Server size={11} /> {hydrated.capabilities.platform.toUpperCase()}</span>
-          <span><Cpu size={11} /> SCAN {state.settings.scanIntervalMs / 1000}s</span>
+          <span><Cpu size={11} /> {i18n.t('SCAN')} {i18n.formatDuration(state.settings.scanIntervalMs / 1000)}</span>
           <span><Type size={11} /> {displaySettings.fontSizePx}px</span>
-          <button className={`app-version ${updateAttention ? 'has-update' : ''}`} onClick={openSettings}>v{appVersion}{updateAttention ? ' · UPDATE' : ''}</button>
+          <button className={`app-version ${updateAttention ? 'has-update' : ''}`} onClick={openSettings}>v{appVersion}{updateAttention ? ` · ${i18n.t('UPDATE')}` : ''}</button>
         </footer>
       </div>
 
@@ -552,7 +565,12 @@ export default function App() {
           coreHealth={coreHealth}
           coreConnection={coreConnection}
           onPreview={setAppearancePreview}
-          onSave={(settings: ConsoleSettings) => { setAppearancePreview(null); setEditor(null); void persist((current) => ({ ...current, settings }), 'Settings saved') }}
+          onSave={(settings: ConsoleSettings) => {
+            setAppearancePreview(settings)
+            setEditor(null)
+            void persist((current) => ({ ...current, settings }), 'Settings saved')
+              .finally(() => setAppearancePreview((current) => current === settings ? null : current))
+          }}
           onClose={() => { setAppearancePreview(null); setEditor(null) }}
           onCheckForUpdates={() => void checkForUpdates()}
           onDownloadUpdate={() => void downloadUpdate()}
@@ -565,9 +583,10 @@ export default function App() {
         <div className={`toast toast--${toast.tone}`}>
           {toast.tone === 'success' ? <CheckCircle2 size={16} /> : toast.tone === 'error' ? <TriangleAlert size={16} /> : <Bell size={16} />}
           <span>{toast.message}</span>
-          <button onClick={() => setToast(null)}><X size={14} /></button>
+          <button onClick={() => setToast(null)} aria-label={i18n.t('Close')}><X size={14} /></button>
         </div>
       )}
-    </div>
+      </div>
+    </I18nProvider>
   )
 }

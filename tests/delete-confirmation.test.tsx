@@ -2,6 +2,7 @@ import { readFile, readdir } from 'node:fs/promises'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { DeleteConfirmation } from '../src/components/Editors'
+import { I18nProvider } from '../src/lib/i18n'
 
 describe('in-application delete confirmation', () => {
   it('renders an explicit safe choice without opening a browser dialog', () => {
@@ -31,5 +32,25 @@ describe('in-application delete confirmation', () => {
     )).join('\n')
     expect(source).not.toContain('window.confirm')
     expect(source).not.toMatch(/\bconfirm\s*\(/)
+  })
+
+  it('renders the safe delete choice in Chinese without changing the supplied subject', () => {
+    const markup = renderToStaticMarkup(
+      <I18nProvider language="zh-CN">
+        <DeleteConfirmation
+          subject="删除 Sales Assistant？"
+          detail="正在运行的进程不会停止。"
+          confirmLabel="删除 Agent"
+          busy
+          onCancel={vi.fn()}
+          onConfirm={vi.fn()}
+        />
+      </I18nProvider>,
+    )
+
+    expect(markup).toContain('删除 Sales Assistant？')
+    expect(markup).toContain('保留')
+    expect(markup).toContain('正在删除…')
+    expect(markup).toContain('role="alert"')
   })
 })

@@ -7,6 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { execFile } from 'node:child_process'
+import { filesAreByteIdentical, sha256File } from './create-deb-x86_64-alias.mjs'
 
 const execFileAsync = promisify(execFile)
 const require = createRequire(import.meta.url)
@@ -17,6 +18,8 @@ const releaseDirectory = path.resolve(root, process.argv[2] || 'release')
 const installedExecutable = process.argv[3] ? path.resolve(process.argv[3]) : null
 const appImage = path.join(releaseDirectory, `Agent-Console-${packageJson.version}-x86_64.AppImage`)
 const deb = path.join(releaseDirectory, `Agent-Console-${packageJson.version}-amd64.deb`)
+const x8664Deb = path.join(releaseDirectory, `Agent-Console-${packageJson.version}-x86_64.deb`)
+const latestLinux = path.join(releaseDirectory, 'latest-linux.yml')
 const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-console-package-verification-'))
 const { renderCoreServiceUnit } = require(path.join(root, 'dist/electron/core/services/core-service-unit.js'))
 const { matchesDetachedCoreIdentity } = require(
@@ -1123,8 +1126,31 @@ async function verifyDesktopAndPersistentCore() {
 
 async function verifyPackages() {
   checkpoint('checking release artifacts')
-  await Promise.all([fs.access(appImage), fs.access(deb)])
+  await Promise.all([fs.access(appImage), fs.access(deb), fs.access(x8664Deb), fs.access(latestLinux)])
   await fs.chmod(appImage, 0o755)
+
+  const [canonicalDebStat, x8664DebStat, canonicalArchitecture, x8664Architecture, canonicalHash, x8664Hash, updateMetadata] = await Promise.all([
+    fs.lstat(deb),
+    fs.lstat(x8664Deb),
+    execFileAsync('dpkg-deb', ['--field', deb, 'Architecture'], { encoding: 'utf8', timeout: 30_000, maxBuffer: 1_000_000 }),
+    execFileAsync('dpkg-deb', ['--field', x8664Deb, 'Architecture'], { encoding: 'utf8', timeout: 30_000, maxBuffer: 1_000_000 }),
+    sha256File(deb),
+    sha256File(x8664Deb),
+    fs.readFile(latestLinux, 'utf8'),
+  ])
+  invariant(canonicalDebStat.isFile() && !canonicalDebStat.isSymbolicLink(), 'Canonical amd64 deb is not one regular file')
+  invariant(x8664DebStat.isFile() && !x8664DebStat.isSymbolicLink(), 'x86_64 deb alias is not one regular file')
+  invariant(canonicalArchitecture.stdout.trim() === 'amd64', 'Canonical deb does not use Debian Architecture amd64')
+  invariant(x8664Architecture.stdout.trim() === 'amd64', 'x86_64 deb alias does not retain Debian Architecture amd64')
+  invariant(canonicalDebStat.size === x8664DebStat.size && canonicalHash === x8664Hash,
+    'x86_64 deb alias size or SHA-256 differs from the canonical amd64 deb')
+  invariant(await filesAreByteIdentical(deb, x8664Deb), 'x86_64 deb alias is not byte-identical to the canonical amd64 deb')
+  const updateArtifactUrls = [...updateMetadata.matchAll(/^\s*-\s+url:\s+([^\r\n]+?)\s*$/gmu)]
+    .map((match) => match[1].replace(/^['"]|['"]$/g, ''))
+  invariant(updateArtifactUrls.filter((url) => url === path.basename(deb)).length === 1,
+    'latest-linux.yml must retain exactly one canonical amd64 deb URL')
+  invariant(!updateArtifactUrls.includes(path.basename(x8664Deb)),
+    'latest-linux.yml artifact URLs must not contain the manual-download x86_64 deb alias')
 
   const appImageExtraction = path.join(temporaryDirectory, 'appimage')
   const debExtraction = path.join(temporaryDirectory, 'deb')

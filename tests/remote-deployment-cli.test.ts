@@ -57,7 +57,7 @@ afterEach(() => {
 describe('Remote deployment CLI', () => {
   it('packages a discoverable deb command with bounded install/remove hooks', () => {
     const packageJson = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'))
-    expect(packageJson.version).toBe('0.5.0')
+    expect(packageJson.version).toBe('0.5.1')
     expect(packageJson.build.deb).toEqual({
       afterInstall: 'resources/remote/deb/after-install.tpl',
       afterRemove: 'resources/remote/deb/after-remove.tpl',

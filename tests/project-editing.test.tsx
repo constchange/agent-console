@@ -18,6 +18,7 @@ const state: ConsoleState = {
   projects: [project],
   agents: [],
   settings: {
+    language: 'en',
     defaultTerminal: 'auto',
     scanIntervalMs: 2_500,
     compactMode: true,

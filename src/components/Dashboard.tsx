@@ -1,6 +1,7 @@
 import { Activity, AlertTriangle, FolderOpen, Pencil, Plus, RotateCcw, SearchX, Sparkles } from 'lucide-react'
 import type { AgentConfig, ConsoleState, Project, RuntimeAgent, RuntimeSnapshot } from '../../shared/types'
 import { formatPercent } from '../lib/format'
+import { useI18n } from '../lib/i18n'
 import { AgentCard } from './AgentCard'
 
 interface DashboardProps {
@@ -38,6 +39,8 @@ export function Dashboard({
   onAddAgent,
   onRestoreProject,
 }: DashboardProps) {
+  const i18n = useI18n()
+  const { t } = i18n
   const selectedProject = state.projects.find((project) => project.id === selectedProjectId)
   const visibleProjects = [...state.projects]
     .filter((project) => selectedProjectId === 'all' || project.id === selectedProjectId)
@@ -61,27 +64,27 @@ export function Dashboard({
     <main className="dashboard">
       <header className="dashboard-heading">
         <div>
-          <div className="eyebrow">{selectedProject ? 'PROJECT DASHBOARD' : 'MISSION OVERVIEW'}</div>
-          <h1>{selectedProject ? `${selectedProject.emoji} ${selectedProject.name}` : 'All Projects'}</h1>
-          <p>{selectedProject ? 'Live status, resource use, and terminal access.' : 'Every project and Agent on this machine, in one view.'}</p>
+          <div className="eyebrow">{t(selectedProject ? 'PROJECT DASHBOARD' : 'MISSION OVERVIEW')}</div>
+          <h1>{selectedProject ? `${selectedProject.emoji} ${selectedProject.name}` : t('All Projects')}</h1>
+          <p>{t(selectedProject ? 'Live status, resource use, and terminal access.' : 'Every project and Agent on this machine, in one view.')}</p>
         </div>
         {selectedProject && (
           <div className="dashboard-heading__actions">
-            <button className="action-button" onClick={() => onEditProject(selectedProject)}><Pencil size={15} /> Edit Project</button>
-            <button className="action-button" onClick={() => onAddAgent(selectedProject.id)}><Plus size={15} /> Add Agent</button>
-            <button className="action-button action-button--primary" onClick={() => onRestoreProject(selectedProject.id)}><RotateCcw size={15} /> Restore workspace</button>
+            <button className="action-button" onClick={() => onEditProject(selectedProject)}><Pencil size={15} /> {t('Edit Project')}</button>
+            <button className="action-button" onClick={() => onAddAgent(selectedProject.id)}><Plus size={15} /> {t('Add Agent')}</button>
+            <button className="action-button action-button--primary" onClick={() => onRestoreProject(selectedProject.id)}><RotateCcw size={15} /> {t('Restore workspace')}</button>
           </div>
         )}
       </header>
 
-      <section className="overview-strip" aria-label="Status overview">
-        <Metric label="VISIBLE AGENTS" value={visibleAgents.length} detail={`${visibleProjects.length} project${visibleProjects.length === 1 ? '' : 's'}`} />
-        <Metric label="ACTIVE NOW" value={active} detail={`${waiting} waiting for you`} tone="active" />
-        <Metric label="ATTENTION" value={errors} detail={errors ? 'Errors need review' : 'No active errors'} tone={errors ? 'error' : 'default'} />
-        <Metric label="TOTAL CPU" value={formatPercent(totalCpu)} detail={`${formatPercent(totalMemory)} memory`} />
+      <section className="overview-strip" aria-label={t('Status overview')}>
+        <Metric label={t('VISIBLE AGENTS')} value={visibleAgents.length} detail={t(visibleProjects.length === 1 ? '{{count}} project' : '{{count}} projects', { count: visibleProjects.length })} />
+        <Metric label={t('ACTIVE NOW')} value={active} detail={t('{{count}} waiting for you', { count: waiting })} tone="active" />
+        <Metric label={t('ATTENTION')} value={errors} detail={t(errors ? 'Errors need review' : 'No active errors')} tone={errors ? 'error' : 'default'} />
+        <Metric label={t('TOTAL CPU')} value={formatPercent(totalCpu, i18n)} detail={t('{{value}} memory', { value: formatPercent(totalMemory, i18n) })} />
         <div className="overview-health">
           <Activity size={18} />
-          <div><strong>{snapshot.scanError ? 'SCAN DEGRADED' : 'SYSTEM LIVE'}</strong><small>{snapshot.scanError ?? `Updated ${new Date(snapshot.capturedAt).toLocaleTimeString()}`}</small></div>
+          <div><strong>{t(snapshot.scanError ? 'SCAN DEGRADED' : 'SYSTEM LIVE')}</strong><small>{snapshot.scanError ? i18n.message(snapshot.scanError) : t('Updated {{time}}', { time: i18n.formatTime(snapshot.capturedAt) })}</small></div>
         </div>
       </section>
 
@@ -104,15 +107,15 @@ export function Dashboard({
                   <h2>{project.name}</h2>
                   <p>
                     <span className="inline-health" style={{ background: projectError ? '#ff6577' : projectActive ? '#3ddc97' : '#586272' }} />
-                    {projectActive} active · {projectWaiting} waiting · {allProjectAgents.length} total
+                    {t('{{active}} active · {{waiting}} waiting · {{total}} total', { active: projectActive, waiting: projectWaiting, total: allProjectAgents.length })}
                   </p>
                 </div>
               </div>
               <div className="project-section__actions">
-                {projectError && <span className="attention-note"><AlertTriangle size={13} /> Attention</span>}
-                <button className="text-button" onClick={() => onEditProject(project)}><Pencil size={14} /> Edit Project</button>
-                <button className="text-button" onClick={() => onAddAgent(project.id)}><Plus size={14} /> Agent</button>
-                <button className="text-button" onClick={() => onRestoreProject(project.id)}><RotateCcw size={14} /> Restore</button>
+                {projectError && <span className="attention-note"><AlertTriangle size={13} /> {t('Attention')}</span>}
+                <button className="text-button" onClick={() => onEditProject(project)}><Pencil size={14} /> {t('Edit Project')}</button>
+                <button className="text-button" onClick={() => onAddAgent(project.id)}><Plus size={14} /> {t('Agent')}</button>
+                <button className="text-button" onClick={() => onRestoreProject(project.id)}><RotateCcw size={14} /> {t('Restore')}</button>
               </div>
             </header>
 
@@ -133,10 +136,10 @@ export function Dashboard({
               <div className="project-empty">
                 {query ? <SearchX size={22} /> : <FolderOpen size={22} />}
                 <div>
-                  <strong>{query ? 'No matching Agents' : 'No Agents in this project'}</strong>
-                  <span>{query ? 'Try a different search.' : 'Add one manually or import a discovered process.'}</span>
+                  <strong>{t(query ? 'No matching Agents' : 'No Agents in this project')}</strong>
+                  <span>{t(query ? 'Try a different search.' : 'Add one manually or import a discovered process.')}</span>
                 </div>
-                {!query && <button className="text-button" onClick={() => onAddAgent(project.id)}><Sparkles size={14} /> Add first Agent</button>}
+                {!query && <button className="text-button" onClick={() => onAddAgent(project.id)}><Sparkles size={14} /> {t('Add first Agent')}</button>}
               </div>
             )}
           </section>

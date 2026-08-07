@@ -1,5 +1,6 @@
 import { X } from 'lucide-react'
 import { useEffect, useRef, type ReactNode } from 'react'
+import { useI18n } from '../lib/i18n'
 
 interface ModalProps {
   title: string
@@ -11,6 +12,7 @@ interface ModalProps {
 
 export function Modal({ title, subtitle, children, onClose, size = 'medium' }: ModalProps) {
   const dialogRef = useRef<HTMLElement>(null)
+  const { t } = useI18n()
 
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
@@ -56,7 +58,7 @@ export function Modal({ title, subtitle, children, onClose, size = 'medium' }: M
             <h2 id="modal-title">{title}</h2>
             {subtitle && <p>{subtitle}</p>}
           </div>
-          <button className="icon-button" onClick={onClose} aria-label="Close dialog">
+          <button className="icon-button" onClick={onClose} aria-label={t('Close dialog')}>
             <X size={18} />
           </button>
         </header>

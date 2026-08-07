@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs'
 import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
+import { languageFromLocale, UI_LANGUAGES, type UiLanguage } from '../../shared/locales'
 import { THEME_IDS, type AgentConfig, type ConsoleState, type Project, type TerminalApp, type ThemeId } from '../../shared/types'
 
 const COLORS = ['#55a6ff', '#a478ff', '#54c79b', '#f6b94b', '#ef6f7a', '#8b98a9']
@@ -30,10 +31,10 @@ function number(value: unknown, fallback: number, min = 0, max = Number.MAX_SAFE
     : fallback
 }
 
-function sanitizeProject(value: Partial<Project>, index: number): Project {
+function sanitizeProject(value: Partial<Project>, index: number, language: UiLanguage): Project {
   return {
     id: id(value.id, `project-${index + 1}`),
-    name: text(value.name, `Project ${index + 1}`, 80),
+    name: text(value.name, language === 'zh-CN' ? `项目 ${index + 1}` : `Project ${index + 1}`, 80),
     emoji: text(value.emoji, '◇', 8),
     color: /^#[0-9a-fA-F]{6}$/.test(value.color ?? '') ? value.color! : COLORS[index % COLORS.length],
     collapsed: Boolean(value.collapsed),
@@ -41,7 +42,7 @@ function sanitizeProject(value: Partial<Project>, index: number): Project {
   }
 }
 
-function sanitizeAgent(value: Partial<AgentConfig>, index: number, validProjects: Set<string>): AgentConfig {
+function sanitizeAgent(value: Partial<AgentConfig>, index: number, validProjects: Set<string>, language: UiLanguage): AgentConfig {
   const projectId = validProjects.has(value.projectId ?? '')
     ? value.projectId!
     : [...validProjects][0] ?? 'inbox'
@@ -72,12 +73,25 @@ function sanitizeAgent(value: Partial<AgentConfig>, index: number, validProjects
   }
 }
 
-export function createDefaultState(): ConsoleState {
+export function detectDefaultLanguage(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+  resolvedLocale = Intl.DateTimeFormat().resolvedOptions().locale,
+): UiLanguage {
+  const locale = environment.LANGUAGE?.split(':')[0]
+    || environment.LC_ALL
+    || environment.LC_MESSAGES
+    || environment.LANG
+    || resolvedLocale
+  return languageFromLocale(locale)
+}
+
+export function createDefaultState(language: UiLanguage = detectDefaultLanguage()): ConsoleState {
   const home = os.homedir()
+  const chinese = language === 'zh-CN'
   const projects: Project[] = [
-    { id: 'product', name: 'Product', emoji: '◫', color: '#55a6ff', collapsed: false, order: 0 },
-    { id: 'sales', name: 'Sales', emoji: '↗', color: '#54c79b', collapsed: false, order: 1 },
-    { id: 'management', name: 'Management', emoji: '◆', color: '#a478ff', collapsed: false, order: 2 },
+    { id: 'product', name: chinese ? '产品' : 'Product', emoji: '◫', color: '#55a6ff', collapsed: false, order: 0 },
+    { id: 'sales', name: chinese ? '销售' : 'Sales', emoji: '↗', color: '#54c79b', collapsed: false, order: 1 },
+    { id: 'management', name: chinese ? '管理' : 'Management', emoji: '◆', color: '#a478ff', collapsed: false, order: 2 },
   ]
 
   const seed = (
@@ -112,14 +126,15 @@ export function createDefaultState(): ConsoleState {
     version: 1,
     projects,
     agents: [
-      seed('product-planner', 'product', 'Product Planner', '◇', '#55a6ff', 'codex', 0),
-      seed('prototype-backend', 'product', 'Prototype Backend', '⬡', '#a478ff', 'backend', 1),
-      seed('sales-assistant', 'sales', 'Sales Assistant', '↗', '#54c79b', 'codex', 0),
-      seed('crm-sync', 'sales', 'CRM Sync', '◉', '#f6b94b', 'worker', 1),
-      seed('operations-agent', 'management', 'Operations Agent', '◆', '#a478ff', 'codex', 0),
-      seed('reporting-dashboard', 'management', 'Reporting Dashboard', '▰', '#f6b94b', 'backend', 1),
+      seed('product-planner', 'product', chinese ? '产品规划' : 'Product Planner', '◇', '#55a6ff', 'codex', 0),
+      seed('prototype-backend', 'product', chinese ? '原型后端' : 'Prototype Backend', '⬡', '#a478ff', 'backend', 1),
+      seed('sales-assistant', 'sales', chinese ? '销售助理' : 'Sales Assistant', '↗', '#54c79b', 'codex', 0),
+      seed('crm-sync', 'sales', chinese ? '客户关系同步' : 'CRM Sync', '◉', '#f6b94b', 'worker', 1),
+      seed('operations-agent', 'management', chinese ? '运营助理' : 'Operations Agent', '◆', '#a478ff', 'codex', 0),
+      seed('reporting-dashboard', 'management', chinese ? '报表看板' : 'Reporting Dashboard', '▰', '#f6b94b', 'backend', 1),
     ],
     settings: {
+      language,
       defaultTerminal: 'auto',
       scanIntervalMs: 2_500,
       compactMode: true,
@@ -129,26 +144,35 @@ export function createDefaultState(): ConsoleState {
   }
 }
 
-export function sanitizeState(value: unknown): ConsoleState {
-  if (!value || typeof value !== 'object') return createDefaultState()
+export function sanitizeState(value: unknown, fallbackLanguage: UiLanguage = detectDefaultLanguage()): ConsoleState {
+  if (!value || typeof value !== 'object') return createDefaultState(fallbackLanguage)
   const source = value as Partial<ConsoleState>
+  const requestedLanguage = source.settings?.language
+  const language = UI_LANGUAGES.includes(requestedLanguage as UiLanguage)
+    ? requestedLanguage as UiLanguage
+    : fallbackLanguage
   const rawProjects = Array.isArray(source.projects)
     ? source.projects.slice(0, 200).filter((project) => project && typeof project === 'object')
     : []
-  const projects = rawProjects.map((project, index) => sanitizeProject(project, index))
-  if (projects.length === 0) projects.push({ ...createDefaultState().projects[0], id: 'inbox', name: 'Inbox' })
+  const projects = rawProjects.map((project, index) => sanitizeProject(project, index, language))
+  if (projects.length === 0) projects.push({
+    ...createDefaultState(language).projects[0],
+    id: 'inbox',
+    name: language === 'zh-CN' ? '收件箱' : 'Inbox',
+  })
   const validProjects = new Set(projects.map((project) => project.id))
   const rawAgents = Array.isArray(source.agents)
     ? source.agents.slice(0, 1_000).filter((agent) => agent && typeof agent === 'object')
     : []
-  const agents = rawAgents.map((agent, index) => sanitizeAgent(agent, index, validProjects))
-  const settings = source.settings ?? createDefaultState().settings
+  const agents = rawAgents.map((agent, index) => sanitizeAgent(agent, index, validProjects, language))
+  const settings = source.settings ?? createDefaultState(language).settings
 
   return {
     version: 1,
     projects,
     agents,
     settings: {
+      language,
       defaultTerminal: TERMINALS.includes(settings.defaultTerminal as TerminalApp)
         ? settings.defaultTerminal
         : 'auto',
