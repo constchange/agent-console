@@ -203,11 +203,13 @@ async function connectToCore(previousPid = null, timeoutMs = 20_000) {
     })
     try {
       await rpc.connected
-      await rpc.request('initialize', {
+      const initialized = await rpc.request('initialize', {
         protocolVersion: CORE_PROTOCOL_VERSION,
         expectedChannel: 'desktop',
         client: { name: 'systemd-package-verifier', version: packageJson.version },
       }, Math.min(RPC_REQUEST_TIMEOUT_MS, remaining()))
+      invariant(initialized.channel === 'desktop', 'Desktop RPC initialized on the wrong channel')
+      invariant(initialized.capabilities?.events === true, 'Desktop RPC did not advertise Core events')
       await rpc.request('events.subscribe', { afterSeq: 0 }, Math.min(RPC_REQUEST_TIMEOUT_MS, remaining()))
       const health = await rpc.request('core.health', undefined, Math.min(RPC_REQUEST_TIMEOUT_MS, remaining()))
       if (previousPid && health.pid === previousPid) {
@@ -240,7 +242,13 @@ async function verifyChannelBoundaries(desktopRpc) {
       client: { name: 'systemd-gateway-verifier', version: packageJson.version },
     })
     invariant(initialized.channel === 'gateway', 'Gateway RPC initialized on the wrong channel')
-    await gatewayRpc.request('events.subscribe', { afterSeq: 0 })
+    invariant(initialized.capabilities?.events === false, 'Gateway RPC unexpectedly advertised raw Core events')
+    await expectRpcError(
+      gatewayRpc,
+      'events.subscribe',
+      { afterSeq: 0 },
+      CORE_RPC_ERROR.METHOD_NOT_FOUND,
+    )
     const health = await gatewayRpc.request('remote.health')
     invariant(health.online === true, 'Gateway RPC health is not online')
     await expectRpcError(gatewayRpc, 'config.get', undefined, CORE_RPC_ERROR.METHOD_NOT_FOUND)
