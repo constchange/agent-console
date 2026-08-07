@@ -1,17 +1,15 @@
-# Agent Console v0.5.1
+# Agent Console v0.5.2
 
 ## 简体中文
 
-- 新增完整的简体中文界面，可在 **Settings → General → Interface language** 中与 English 即时切换；首次安装会跟随系统语言。
-- Dashboard、设置、应用更新、Mobile Remote、状态、提示和错误信息均已本地化。Project 名称、Agent 名称、终端标题和终端原始输出始终保持原文。
-- 状态识别新增谨慎的中文提示支持，可识别“正在分析”“等待确认”“任务已完成”“测试失败”等常见输出。
-- Release 新增 `Agent-Console-0.5.1-x86_64.deb`。它与 Debian 标准命名的 `Agent-Console-0.5.1-amd64.deb` 逐字节完全一致，Intel/AMD 64 位电脑只需下载其中一份。
-- 升级会保留现有 Project、Agent、主题、字号、状态备份、tmux Session 和正在运行的 Agent；本机 Core、更新校验和 Mobile Remote 安全边界保持不变。
+- 修复严重的进程发现回归：已发现的本地进程不会再被下一次自动刷新错误清空，进程数量也不会从非零瞬间跳回 0。
+- 修复手动发现与自动刷新同时发生时的竞态，确保最后显示的是完整、可导入的进程列表。
+- 桌面连接到本地 Core 后会立即执行一次完整进程发现；桌面未连接时仍保持低频轻量扫描。
+- 升级会保留 v0.5.1 的 Project、Agent、主题、字号、语言、tmux Session、Mobile Remote 设置和正在运行的进程。
 
 ## English
 
-- Added a complete Simplified Chinese interface with instant switching to and from English under **Settings → General → Interface language**. New installations follow the system language.
-- Localized the Dashboard, settings, application updates, Mobile Remote, statuses, notices, and errors. Project names, Agent names, terminal titles, and raw terminal output always remain unchanged.
-- Added conservative Chinese status recognition for common phrases such as analyzing, waiting for approval, completed, and failed.
-- Added `Agent-Console-0.5.1-x86_64.deb` to each release. It is byte-for-byte identical to the Debian-standard `Agent-Console-0.5.1-amd64.deb`; Intel/AMD 64-bit users only need one of them.
-- Existing Projects, Agents, themes, font size, state backups, tmux sessions, and running Agents are preserved. Local Core, update verification, and Mobile Remote security boundaries are unchanged.
+- Fixed a critical process-discovery regression where the next automatic refresh cleared all discovered local processes and reset the count to zero.
+- Fixed the race between manual discovery and the periodic refresh so the final snapshot keeps the complete importable process list.
+- A full discovery scan now starts immediately when the desktop connects to the local Core, while the disconnected Core keeps its low-frequency lightweight scan.
+- Updating preserves v0.5.1 Projects, Agents, themes, font size, language, tmux sessions, Mobile Remote settings, and running processes.
