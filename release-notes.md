@@ -1,11 +1,17 @@
-## Mobile Remote control foundation
+# Agent Console v0.5.1
 
-- Added a dedicated **Settings → Mobile Remote** experience for administrator setup, sign-in/registration, email verification, enable/disable, pairing safety codes, per-phone revocation, per-Agent capabilities, workstation rename, and service Doctor results. Unconfigured service and unavailable secure storage remain visibly fail-closed; workstation removal stays unavailable until local key deletion and cloud revocation can be committed atomically.
-- Split Core IPC into private desktop and Gateway Unix sockets with protocol-v2 channel binding and disjoint method allowlists. Package acceptance proves the desktop channel cannot call `remote.*`, the Gateway channel cannot call `config.*`, and Core still opens no TCP listener.
-- Added a localhost-only Gateway server boundary, signed/redacted Remote DTO validation, replay-safe authorization infrastructure, and structured task/approval commands without exposing terminal output, commands, paths, process arguments, tmux identifiers, tokens, or model reasoning.
-- Limited Mobile write actions to structured Codex app-server tasks. Observed tmux compatibility tasks remain visible but read-only because pane input cannot be atomically bound to a foreground process.
-- Added private `remote.env` handling, a hardened Gateway user unit restricted to localhost, a separate autossh unit, exact ED25519 host-key pinning, restricted VPS tunnel-account policy, and Caddy/Nginx HTTPS 443 templates. No real host, key, or service-role credential is shipped.
-- Added `agent-console-remote validate/install/render/doctor/uninstall` and deb PATH installation. On AppImage, the first Settings enable attempt now verifies packaged inputs and atomically deploys a private CLI plus a launcher that targets the stable AppImage without copying configuration, keys, credentials, or sessions. Package acceptance launches the real Gateway role to check ARMED fail-closed behavior, exact IPv4 loopback binding, Core-dependent health, malformed signature rejection, deterministic systemd units, and shipped-resource/key-leak boundaries.
-- Retained the persistent Core, atomic configuration ownership, SQLite task ledger, AppImage/deb updates, tmux continuity, and safe `KillMode=process` behavior from v0.4.
+## 简体中文
 
-Existing Projects, Agents, themes, interface settings, state backups, tmux sessions, and running Agent processes are preserved. Mobile Remote remains disabled until an administrator installs a private mode-`0600` configuration, deploys the reviewed VPS bundle, completes account/device setup, and explicitly enables the two user services. The mobile client and production Supabase/VPS tenancy are deployed separately; this repository contains no real endpoint or credential.
+- 新增完整的简体中文界面，可在 **Settings → General → Interface language** 中与 English 即时切换；首次安装会跟随系统语言。
+- Dashboard、设置、应用更新、Mobile Remote、状态、提示和错误信息均已本地化。Project 名称、Agent 名称、终端标题和终端原始输出始终保持原文。
+- 状态识别新增谨慎的中文提示支持，可识别“正在分析”“等待确认”“任务已完成”“测试失败”等常见输出。
+- Release 新增 `Agent-Console-0.5.1-x86_64.deb`。它与 Debian 标准命名的 `Agent-Console-0.5.1-amd64.deb` 逐字节完全一致，Intel/AMD 64 位电脑只需下载其中一份。
+- 升级会保留现有 Project、Agent、主题、字号、状态备份、tmux Session 和正在运行的 Agent；本机 Core、更新校验和 Mobile Remote 安全边界保持不变。
+
+## English
+
+- Added a complete Simplified Chinese interface with instant switching to and from English under **Settings → General → Interface language**. New installations follow the system language.
+- Localized the Dashboard, settings, application updates, Mobile Remote, statuses, notices, and errors. Project names, Agent names, terminal titles, and raw terminal output always remain unchanged.
+- Added conservative Chinese status recognition for common phrases such as analyzing, waiting for approval, completed, and failed.
+- Added `Agent-Console-0.5.1-x86_64.deb` to each release. It is byte-for-byte identical to the Debian-standard `Agent-Console-0.5.1-amd64.deb`; Intel/AMD 64-bit users only need one of them.
+- Existing Projects, Agents, themes, font size, state backups, tmux sessions, and running Agents are preserved. Local Core, update verification, and Mobile Remote security boundaries are unchanged.

@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import type { AgentConfig, ConsoleState, Project, RuntimeSnapshot } from '../../shared/types'
 import { STATUS_META } from '../lib/format'
+import { useI18n } from '../lib/i18n'
 
 interface SidebarProps {
   state: ConsoleState
@@ -44,6 +45,7 @@ export function Sidebar({
   onReorderAgent,
   onOpenSettings,
 }: SidebarProps) {
+  const { t } = useI18n()
   const runtimeById = new Map(snapshot.agents.map((agent) => [agent.id, agent]))
   const projects = [...state.projects].sort((a, b) => a.order - b.order)
   const query = search.trim().toLowerCase()
@@ -53,8 +55,8 @@ export function Sidebar({
       <div className="sidebar__brand">
         <div className="brand-mark"><span /></div>
         <div>
-          <strong>AGENT CONSOLE</strong>
-          <small>LOCAL MISSION CONTROL</small>
+          <strong>{t('AGENT CONSOLE')}</strong>
+          <small>{t('LOCAL MISSION CONTROL')}</small>
         </div>
       </div>
 
@@ -63,25 +65,25 @@ export function Sidebar({
         <input
           value={search}
           onChange={(event) => onSearch(event.target.value)}
-          placeholder="Search projects and agents"
-          aria-label="Search projects and agents"
+          placeholder={t('Search projects and agents')}
+          aria-label={t('Search projects and agents')}
         />
         <kbd>Ctrl K</kbd>
       </label>
 
-      <nav className="project-tree" aria-label="Project Explorer">
+      <nav className="project-tree" aria-label={t('Project Explorer')}>
         <button
           className={`tree-home ${selectedProjectId === 'all' ? 'is-selected' : ''}`}
           onClick={() => onSelectProject('all')}
         >
           <Gauge size={16} />
-          <span>All Projects</span>
+          <span>{t('All Projects')}</span>
           <span className="tree-count">{state.agents.length}</span>
         </button>
 
         <div className="tree-label">
-          <span>PROJECTS</span>
-          <button className="icon-button icon-button--small" onClick={onAddProject} title="New project">
+          <span>{t('PROJECTS')}</span>
+          <button className="icon-button icon-button--small" onClick={onAddProject} title={t('New project')}>
             <FolderPlus size={14} />
           </button>
         </div>
@@ -116,7 +118,7 @@ export function Sidebar({
                 <button
                   className="tree-chevron"
                   onClick={() => onToggleProject(project)}
-                  aria-label={project.collapsed ? 'Expand project' : 'Collapse project'}
+                  aria-label={t(project.collapsed ? 'Expand project' : 'Collapse project')}
                 >
                   {project.collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
                 </button>
@@ -124,20 +126,20 @@ export function Sidebar({
                   className="tree-project__main"
                   onClick={() => onSelectProject(project.id)}
                   onDoubleClick={() => onEditProject(project)}
-                  title="Open project · Double-click to edit"
+                  title={t('Open project · Double-click to edit')}
                 >
                   <span className="project-glyph" style={{ color: project.color }}>{project.emoji}</span>
                   <span>{project.name}</span>
                 </button>
-                <span className="tree-health" title={`${active} active of ${allAgents.length}`}>
+                <span className="tree-health" title={t('{{count}} active of {{total}}', { count: active, total: allAgents.length })}>
                   <i style={{ background: active ? '#3ddc97' : '#4b5563' }} />
                   {active}/{allAgents.length}
                 </span>
                 <button
                   className="tree-action tree-action--project"
                   onClick={() => onEditProject(project)}
-                  title={`Edit ${project.name}`}
-                  aria-label={`Edit ${project.name}`}
+                  title={t('Edit {{name}}', { name: project.name })}
+                  aria-label={t('Edit {{name}}', { name: project.name })}
                 >
                   <Pencil size={14} />
                 </button>
@@ -170,8 +172,8 @@ export function Sidebar({
                         <span className="tree-agent__status" style={{ background: meta.color }} />
                         <span className="tree-agent__emoji" style={{ color: agent.color }}>{agent.emoji}</span>
                         <button onClick={() => onSelectProject(project.id)}>{agent.name}</button>
-                        <small>{meta.label}</small>
-                        <button className="tree-action" onClick={() => onEditAgent(agent)} title="Edit agent">
+                        <small>{t(meta.label)}</small>
+                        <button className="tree-action" onClick={() => onEditAgent(agent)} title={t('Edit agent')}>
                           <Pencil size={13} />
                         </button>
                       </div>
@@ -179,7 +181,7 @@ export function Sidebar({
                   })}
                   {!query && (
                     <button className="tree-add-agent" onClick={() => onAddAgent(project.id)}>
-                      <Plus size={13} /> Add Agent
+                      <Plus size={13} /> {t('Add Agent')}
                     </button>
                   )}
                 </div>
@@ -193,11 +195,11 @@ export function Sidebar({
         <div className="local-health">
           <span className="local-health__pulse" />
           <div>
-            <strong>LOCAL SYSTEM</strong>
-            <small>{snapshot.capabilities.terminals.length} terminals · {snapshot.capabilities.tmux ? 'tmux ready' : 'tmux unavailable'}</small>
+            <strong>{t('LOCAL SYSTEM')}</strong>
+            <small>{t(snapshot.capabilities.tmux ? '{{count}} terminals · tmux ready' : '{{count}} terminals · tmux unavailable', { count: snapshot.capabilities.terminals.length })}</small>
           </div>
         </div>
-        <button className="icon-button" onClick={onOpenSettings} title="Settings">
+        <button className="icon-button" onClick={onOpenSettings} title={t('Settings')}>
           <Settings size={17} />
         </button>
       </footer>

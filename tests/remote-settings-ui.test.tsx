@@ -1,7 +1,9 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
+import type { UiLanguage } from '../shared/locales'
 import type { RemoteSettingsState } from '../shared/remote-settings'
 import { normalizedPermissions, RemoteControlSettingsView } from '../src/components/RemoteControlSettings'
+import { I18nProvider } from '../src/lib/i18n'
 
 const actions = {
   signUp: vi.fn(async () => undefined),
@@ -46,8 +48,12 @@ function state(overrides: Partial<RemoteSettingsState>): RemoteSettingsState {
   }
 }
 
-function render(remoteState: RemoteSettingsState): string {
-  return renderToStaticMarkup(<RemoteControlSettingsView state={remoteState} busyAction={null} error={null} actions={actions} />)
+function render(remoteState: RemoteSettingsState, language: UiLanguage = 'en'): string {
+  return renderToStaticMarkup(
+    <I18nProvider language={language}>
+      <RemoteControlSettingsView state={remoteState} busyAction={null} error={null} actions={actions} />
+    </I18nProvider>,
+  )
 }
 
 describe('Mobile Remote desktop settings', () => {
@@ -112,19 +118,26 @@ describe('Mobile Remote desktop settings', () => {
     expect(markup).toContain('Pixel')
     expect(markup).toContain('Revoke')
     expect(markup).toContain('Product Planner')
-    expect(markup).toContain('aria-label="Product Planner: approve"')
+    expect(markup).toContain('aria-label="Product Planner: Approve"')
   })
 
   it('fails closed when secure Linux storage is unavailable', () => {
-    const markup = render(state({
+    const lockedState = state({
       phase: 'secure-storage-unavailable',
       secureStorageReady: false,
       message: 'Electron reported the basic_text backend.',
-    }))
+    })
+    const markup = render(lockedState)
 
     expect(markup).toContain('will not use plaintext credential storage')
     expect(markup).toContain('Unlock your desktop keyring')
     expect(markup).not.toContain('Turn on remote')
+
+    const chineseMarkup = render(lockedState, 'zh-CN')
+    expect(chineseMarkup).toContain('远程访问不会使用明文凭据存储')
+    expect(chineseMarkup).toContain('请解锁桌面密钥环')
+    expect(chineseMarkup).toContain('basic_text')
+    expect(chineseMarkup).not.toContain('开启遥控')
   })
 
   it('requires a new password and keeps Remote locked during recovery', () => {
@@ -139,5 +152,34 @@ describe('Mobile Remote desktop settings', () => {
     expect(markup).toContain('Confirm new password')
     expect(markup).toContain('Remote services stay disabled during recovery')
     expect(markup).not.toContain('Turn on remote')
+  })
+
+  it('localizes remote state, checks, dates, and permission labels without translating user data or URLs', () => {
+    const checkedAt = '2026-08-07T00:00:00.000Z'
+    const markup = render(state({
+      phase: 'ready',
+      message: 'Remote authorization, the local Gateway, the tunnel, and the public HTTPS health check are ready.',
+      gateway: { enabled: true, localAddress: '127.0.0.1:43127', publicBaseUrl: 'https://remote.example.invalid', gatewayPid: 4321, tunnelActive: true, lastReachableAt: checkedAt },
+      agents: [{
+        agentId: 'agent-1',
+        agentName: 'Product Planner',
+        projectName: 'Product',
+        color: '#55a6ff',
+        permissions: { viewStatus: true, viewEvents: true, message: true, approve: false, interrupt: false },
+        pendingCloudSync: true,
+      }],
+      capabilities: { canRegister: false, canSignIn: false, canEnable: false, canPair: true, canRunDoctor: true, canRemoveWorkstation: true },
+    }), 'zh-CN')
+
+    expect(markup).toContain('手机遥控')
+    expect(markup).toContain('远程授权、本机 Gateway、隧道与公网 HTTPS 健康检查均已就绪。')
+    expect(markup).toContain('安全存储')
+    expect(markup).toContain('受保护存储可用。')
+    expect(markup).toContain(new Date(checkedAt).toLocaleString('zh-CN'))
+    expect(markup).toContain('aria-label="Product Planner: 批准"')
+    expect(markup).toContain('Product Planner')
+    expect(markup).toContain('owner@example.com')
+    expect(markup).toContain('https://remote.example.invalid')
+    expect(markup).toContain('127.0.0.1:43127')
   })
 })

@@ -5,6 +5,7 @@ import {
   CircleAlert,
   Download,
   ExternalLink,
+  Languages,
   MonitorUp,
   Palette,
   RefreshCw,
@@ -30,6 +31,7 @@ import type {
 } from '../../shared/types'
 import { installationKindLabel } from '../../shared/update-helpers'
 import { uniqueId } from '../lib/format'
+import { useI18n } from '../lib/i18n'
 import { THEMES } from '../lib/themes'
 import { Modal } from './Modal'
 import { RemoteControlSettings } from './RemoteControlSettings'
@@ -65,14 +67,15 @@ export function DeleteConfirmation({
   onCancel,
   onConfirm,
 }: DeleteConfirmationProps) {
+  const { t } = useI18n()
   return (
     <div className="delete-confirmation" role="alert">
       <AlertTriangle size={16} />
       <span><strong>{subject}</strong><small>{detail}</small></span>
       <div>
-        <button type="button" className="action-button" autoFocus disabled={busy} onClick={onCancel}>Keep it</button>
+        <button type="button" className="action-button" autoFocus disabled={busy} onClick={onCancel}>{t('Keep it')}</button>
         <button type="button" className="danger-button" disabled={busy} onClick={onConfirm}>
-          <Trash2 size={14} /> {busy ? 'Deleting…' : confirmLabel}
+          <Trash2 size={14} /> {busy ? t('Deleting…') : confirmLabel}
         </button>
       </div>
     </div>
@@ -80,6 +83,7 @@ export function DeleteConfirmation({
 }
 
 export function AgentEditor({ projects, initial, existing, onSave, onDelete, onClose }: AgentEditorProps) {
+  const { t } = useI18n()
   const firstProject = projects[0]
   const deleteButtonRef = useRef<HTMLButtonElement>(null)
   const [deletePending, setDeletePending] = useState(false)
@@ -87,11 +91,11 @@ export function AgentEditor({ projects, initial, existing, onSave, onDelete, onC
   const [draft, setDraft] = useState<AgentConfig>({
     id: initial.id ?? uniqueId('agent'),
     projectId: initial.projectId ?? firstProject?.id ?? 'inbox',
-    name: initial.name ?? 'New Agent',
+    name: initial.name ?? t('New Agent'),
     emoji: initial.emoji ?? '◆',
     color: initial.color ?? '#55a6ff',
     kind: initial.kind ?? 'codex',
-    terminalTitle: initial.terminalTitle ?? '◆ New Agent',
+    terminalTitle: initial.terminalTitle ?? `◆ ${t('New Agent')}`,
     terminalApp: initial.terminalApp ?? 'auto',
     tmuxSession: initial.tmuxSession ?? '',
     command: initial.command ?? '',
@@ -139,62 +143,62 @@ export function AgentEditor({ projects, initial, existing, onSave, onDelete, onC
 
   return (
     <Modal
-      title={existing ? `Edit ${initial.name}` : 'Add Agent'}
-      subtitle="Define how this process is identified and how its terminal should open."
+      title={existing ? t('Edit {{name}}', { name: initial.name ?? draft.name }) : t('Add Agent')}
+      subtitle={t('Define how this process is identified and how its terminal should open.')}
       onClose={requestClose}
       size="large"
     >
       <form className="editor-form" onSubmit={submit}>
         <section className="form-section">
-          <div className="form-section__title"><span>01</span><div><strong>Identity</strong><small>How this Agent appears in Mission Control</small></div></div>
+          <div className="form-section__title"><span>01</span><div><strong>{t('Identity')}</strong><small>{t('How this Agent appears in Mission Control')}</small></div></div>
           <div className="form-grid form-grid--identity">
-            <label><span>Name</span><input required value={draft.name} onChange={(event) => update('name', event.target.value)} /></label>
-            <label><span>Project</span><select value={draft.projectId} onChange={(event) => update('projectId', event.target.value)}>{projects.map((project) => <option key={project.id} value={project.id}>{project.emoji} {project.name}</option>)}</select></label>
-            <label><span>Symbol</span><input className="emoji-input" value={draft.emoji} maxLength={8} onChange={(event) => update('emoji', event.target.value)} /></label>
-            <label><span>Type</span><select value={draft.kind} onChange={(event) => update('kind', event.target.value as AgentKind)}>{KINDS.map((kind) => <option key={kind} value={kind}>{kind}</option>)}</select></label>
+            <label><span>{t('Name')}</span><input required value={draft.name} onChange={(event) => update('name', event.target.value)} /></label>
+            <label><span>{t('Project')}</span><select value={draft.projectId} onChange={(event) => update('projectId', event.target.value)}>{projects.map((project) => <option key={project.id} value={project.id}>{project.emoji} {project.name}</option>)}</select></label>
+            <label><span>{t('Symbol')}</span><input className="emoji-input" value={draft.emoji} maxLength={8} onChange={(event) => update('emoji', event.target.value)} /></label>
+            <label><span>{t('Type')}</span><select value={draft.kind} onChange={(event) => update('kind', event.target.value as AgentKind)}>{KINDS.map((kind) => <option key={kind} value={kind}>{kind}</option>)}</select></label>
           </div>
           <div className="color-picker-row">
-            <span>Color label</span>
-            <div>{COLORS.map((color) => <button type="button" key={color} className={draft.color === color ? 'is-selected' : ''} style={{ background: color }} onClick={() => update('color', color)} aria-label={`Use ${color}`} />)}<input type="color" value={draft.color} onChange={(event) => update('color', event.target.value)} /></div>
+            <span>{t('Color label')}</span>
+            <div>{COLORS.map((color) => <button type="button" key={color} className={draft.color === color ? 'is-selected' : ''} style={{ background: color }} onClick={() => update('color', color)} aria-label={t('Use {{color}}', { color })} />)}<input type="color" value={draft.color} onChange={(event) => update('color', event.target.value)} /></div>
           </div>
         </section>
 
         <section className="form-section">
-          <div className="form-section__title"><span>02</span><div><strong>Terminal & launch</strong><small>tmux is recommended because work survives a closed window</small></div></div>
+          <div className="form-section__title"><span>02</span><div><strong>{t('Terminal & launch')}</strong><small>{t('tmux is recommended because work survives a closed window')}</small></div></div>
           <div className="form-grid">
-            <label className="field-span-2"><span>Working directory</span><input value={draft.cwd} placeholder="/home/you/Projects/my-project" onChange={(event) => update('cwd', event.target.value)} /><small>The folder this Agent works inside.</small></label>
-            <label><span>tmux session</span><input value={draft.tmuxSession} placeholder="product-roadmap" onChange={(event) => update('tmuxSession', event.target.value)} /><small>Leave empty if this process does not use tmux.</small></label>
-            <label><span>Terminal app</span><select value={draft.terminalApp} onChange={(event) => update('terminalApp', event.target.value as TerminalApp)}>{TERMINALS.map((terminal) => <option key={terminal} value={terminal}>{terminal}</option>)}</select></label>
-            <label className="field-span-2"><span>Terminal title</span><input value={draft.terminalTitle} onChange={(event) => update('terminalTitle', event.target.value)} /></label>
-            <label className="field-span-2"><span>Launch command</span><textarea rows={2} value={draft.command} placeholder="codex" onChange={(event) => update('command', event.target.value)} /><small>Used only when Agent Console needs to start a new session. Leave empty for an already-running imported process.</small></label>
+            <label className="field-span-2"><span>{t('Working directory')}</span><input value={draft.cwd} placeholder="/home/you/Projects/my-project" onChange={(event) => update('cwd', event.target.value)} /><small>{t('The folder this Agent works inside.')}</small></label>
+            <label><span>{t('tmux session')}</span><input value={draft.tmuxSession} placeholder="product-roadmap" onChange={(event) => update('tmuxSession', event.target.value)} /><small>{t('Leave empty if this process does not use tmux.')}</small></label>
+            <label><span>{t('Terminal app')}</span><select value={draft.terminalApp} onChange={(event) => update('terminalApp', event.target.value as TerminalApp)}>{TERMINALS.map((terminal) => <option key={terminal} value={terminal}>{terminal}</option>)}</select></label>
+            <label className="field-span-2"><span>{t('Terminal title')}</span><input value={draft.terminalTitle} onChange={(event) => update('terminalTitle', event.target.value)} /></label>
+            <label className="field-span-2"><span>{t('Launch command')}</span><textarea rows={2} value={draft.command} placeholder="codex" onChange={(event) => update('command', event.target.value)} /><small>{t('Used only when Agent Console needs to start a new session. Leave empty for an already-running imported process.')}</small></label>
           </div>
         </section>
 
         <section className="form-section">
-          <div className="form-section__title"><span>03</span><div><strong>Process matching</strong><small>How the live process is connected to this card</small></div></div>
+          <div className="form-section__title"><span>03</span><div><strong>{t('Process matching')}</strong><small>{t('How the live process is connected to this card')}</small></div></div>
           <div className="form-grid">
-            <label><span>PID</span><input type="number" min="1" value={draft.pid ?? ''} placeholder="Auto" onChange={(event) => update('pid', event.target.value ? Number(event.target.value) : null)} /></label>
-            <label><span>Status override</span><select value={draft.statusOverride ?? ''} onChange={(event) => update('statusOverride', (event.target.value || null) as AgentStatus | null)}><option value="">Automatic</option>{STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}</select></label>
-            <label className="field-span-2"><span>Command match pattern</span><input value={draft.matchPattern} placeholder="Optional, for example: codex.*product-roadmap" onChange={(event) => update('matchPattern', event.target.value)} /><small>Advanced: a text pattern used if the PID changes after restart.</small></label>
-            <label className="field-span-2"><span>Log file</span><input value={draft.logPath} placeholder="Optional path to a log file" onChange={(event) => update('logPath', event.target.value)} /><small>The last line becomes the Agent card’s latest output.</small></label>
+            <label><span>PID</span><input type="number" min="1" value={draft.pid ?? ''} placeholder={t('Automatic')} onChange={(event) => update('pid', event.target.value ? Number(event.target.value) : null)} /></label>
+            <label><span>{t('Status override')}</span><select value={draft.statusOverride ?? ''} onChange={(event) => update('statusOverride', (event.target.value || null) as AgentStatus | null)}><option value="">{t('Automatic')}</option>{STATUSES.map((status) => <option key={status} value={status}>{t(status.charAt(0).toUpperCase() + status.slice(1))}</option>)}</select></label>
+            <label className="field-span-2"><span>{t('Command match pattern')}</span><input value={draft.matchPattern} placeholder={t('Optional, for example: codex.*product-roadmap')} onChange={(event) => update('matchPattern', event.target.value)} /><small>{t('Advanced: a text pattern used if the PID changes after restart.')}</small></label>
+            <label className="field-span-2"><span>{t('Log file')}</span><input value={draft.logPath} placeholder={t('Optional path to a log file')} onChange={(event) => update('logPath', event.target.value)} /><small>{t('The last line becomes the Agent card’s latest output.')}</small></label>
           </div>
-          <label className="toggle-row"><input type="checkbox" checked={draft.autoStart} onChange={(event) => update('autoStart', event.target.checked)} /><span><strong>Include in workspace restore</strong><small>Start or open this Agent when the Project is restored.</small></span></label>
+          <label className="toggle-row"><input type="checkbox" checked={draft.autoStart} onChange={(event) => update('autoStart', event.target.checked)} /><span><strong>{t('Include in workspace restore')}</strong><small>{t('Start or open this Agent when the Project is restored.')}</small></span></label>
         </section>
 
         <footer className="editor-actions">
           {deletePending && onDelete ? (
             <DeleteConfirmation
-              subject={`Delete ${draft.name}?`}
-              detail="It will disappear from Agent Console, but its running process will not be stopped."
-              confirmLabel="Delete Agent"
+              subject={t('Delete {{name}}?', { name: draft.name })}
+              detail={t('It will disappear from Agent Console, but its running process will not be stopped.')}
+              confirmLabel={t('Delete Agent')}
               busy={deleting}
               onCancel={cancelDelete}
               onConfirm={confirmDelete}
             />
           ) : (
             <>
-              {existing && onDelete ? <button ref={deleteButtonRef} type="button" className="danger-button" onClick={() => setDeletePending(true)}><Trash2 size={14} /> Delete Agent</button> : <span />}
-              <div><button type="button" className="action-button" onClick={onClose}>Cancel</button><button type="submit" className="action-button action-button--primary">Save Agent</button></div>
+              {existing && onDelete ? <button ref={deleteButtonRef} type="button" className="danger-button" onClick={() => setDeletePending(true)}><Trash2 size={14} /> {t('Delete Agent')}</button> : <span />}
+              <div><button type="button" className="action-button" onClick={onClose}>{t('Cancel')}</button><button type="submit" className="action-button action-button--primary">{t('Save Agent')}</button></div>
             </>
           )}
         </footer>
@@ -212,8 +216,9 @@ interface ProjectEditorProps {
 }
 
 export function ProjectEditor({ initial, agentCount, onSave, onDelete, onClose }: ProjectEditorProps) {
+  const { t } = useI18n()
   const deleteButtonRef = useRef<HTMLButtonElement>(null)
-  const [draft, setDraft] = useState<Project>(initial ?? { id: uniqueId('project'), name: 'New Project', emoji: '◇', color: '#55a6ff', collapsed: false, order: 0 })
+  const [draft, setDraft] = useState<Project>(initial ?? { id: uniqueId('project'), name: t('New Project'), emoji: '◇', color: '#55a6ff', collapsed: false, order: 0 })
   const [deletePending, setDeletePending] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const submit = (event: FormEvent) => {
@@ -234,29 +239,29 @@ export function ProjectEditor({ initial, agentCount, onSave, onDelete, onClose }
     onDelete()
   }
   return (
-    <Modal title={initial ? `Edit ${initial.name}` : 'New Project'} subtitle="A Project groups related Agents, terminals, backends, and workers." onClose={requestClose} size="small">
+    <Modal title={initial ? t('Edit {{name}}', { name: initial.name }) : t('New Project')} subtitle={t('A Project groups related Agents, terminals, backends, and workers.')} onClose={requestClose} size="small">
       <form className="editor-form project-editor" onSubmit={submit}>
-        <label><span>Project name</span><input required value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
+        <label><span>{t('Project name')}</span><input required value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
         <div className="form-grid form-grid--project">
-          <label><span>Symbol</span><input value={draft.emoji} maxLength={8} onChange={(event) => setDraft({ ...draft, emoji: event.target.value })} /></label>
-          <label><span>Color</span><input type="color" value={draft.color} onChange={(event) => setDraft({ ...draft, color: event.target.value })} /></label>
+          <label><span>{t('Symbol')}</span><input value={draft.emoji} maxLength={8} onChange={(event) => setDraft({ ...draft, emoji: event.target.value })} /></label>
+          <label><span>{t('Color')}</span><input type="color" value={draft.color} onChange={(event) => setDraft({ ...draft, color: event.target.value })} /></label>
         </div>
-        <div className="project-preview" style={{ '--project-color': draft.color } as React.CSSProperties}><span>{draft.emoji}</span><div><strong>{draft.name || 'Project name'}</strong><small>{agentCount} Agents</small></div></div>
-        {initial && agentCount > 0 && <div className="form-notice"><AlertTriangle size={15} /><span>Move or delete this Project’s {agentCount} Agents before deleting the Project.</span></div>}
+        <div className="project-preview" style={{ '--project-color': draft.color } as React.CSSProperties}><span>{draft.emoji}</span><div><strong>{draft.name || t('Project name')}</strong><small>{t('{{count}} Agents', { count: agentCount })}</small></div></div>
+        {initial && agentCount > 0 && <div className="form-notice"><AlertTriangle size={15} /><span>{t('Move or delete this Project’s {{count}} Agents before deleting the Project.', { count: agentCount })}</span></div>}
         <footer className="editor-actions">
           {deletePending && onDelete ? (
             <DeleteConfirmation
-              subject={`Delete ${draft.name}?`}
-              detail="This removes the empty Project from Agent Console."
-              confirmLabel="Delete Project"
+              subject={t('Delete {{name}}?', { name: draft.name })}
+              detail={t('This removes the empty Project from Agent Console.')}
+              confirmLabel={t('Delete Project')}
               busy={deleting}
               onCancel={cancelDelete}
               onConfirm={confirmDelete}
             />
           ) : (
             <>
-              {initial && onDelete ? <button ref={deleteButtonRef} type="button" className="danger-button" disabled={agentCount > 0} onClick={() => setDeletePending(true)}><Trash2 size={14} /> Delete Project</button> : <span />}
-              <div><button type="button" className="action-button" onClick={onClose}>Cancel</button><button type="submit" className="action-button action-button--primary">Save Project</button></div>
+              {initial && onDelete ? <button ref={deleteButtonRef} type="button" className="danger-button" disabled={agentCount > 0} onClick={() => setDeletePending(true)}><Trash2 size={14} /> {t('Delete Project')}</button> : <span />}
+              <div><button type="button" className="action-button" onClick={onClose}>{t('Cancel')}</button><button type="submit" className="action-button action-button--primary">{t('Save Project')}</button></div>
             </>
           )}
         </footer>
@@ -288,25 +293,18 @@ const CORE_CONNECTION_LABELS: Record<CoreConnectionPhase, string> = {
   incompatible: 'Version mismatch',
 }
 
-function formatBytes(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB']
-  const index = Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1_024)))
-  return `${(value / 1_024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`
-}
-
-function updateHeading(updateState: UpdateState): string {
-  const headings: Record<UpdateState['phase'], string> = {
-    disabled: 'Updates are off in preview mode',
-    idle: 'Ready to check',
-    checking: 'Checking for updates',
-    available: `Version ${updateState.availableVersion ?? ''} is available`,
-    downloading: `Downloading version ${updateState.availableVersion ?? ''}`,
-    downloaded: 'Ready to restart and update',
-    'up-to-date': 'Agent Console is up to date',
-    error: 'Update check needs attention',
+function updateHeading(updateState: UpdateState, t: ReturnType<typeof useI18n>['t']): string {
+  const headings: Record<UpdateState['phase'], () => string> = {
+    disabled: () => t('Updates are off in preview mode'),
+    idle: () => t('Ready to check'),
+    checking: () => t('Checking for updates'),
+    available: () => t('Version {{version}} is available', { version: updateState.availableVersion ?? '' }),
+    downloading: () => t('Downloading version {{version}}', { version: updateState.availableVersion ?? '' }),
+    downloaded: () => t('Ready to restart and update'),
+    'up-to-date': () => t('Agent Console is up to date'),
+    error: () => t('Update check needs attention'),
   }
-  return headings[updateState.phase]
+  return headings[updateState.phase]()
 }
 
 export function SettingsEditor({
@@ -323,6 +321,7 @@ export function SettingsEditor({
   onInstallUpdate,
   onOpenReleasesPage,
 }: SettingsEditorProps) {
+  const { t, message, formatDateTime, formatBytes } = useI18n()
   const [draft, setDraft] = useState(settings)
   const [settingsPage, setSettingsPage] = useState<'general' | 'remote'>('general')
 
@@ -339,39 +338,50 @@ export function SettingsEditor({
   const resetAppearance = () => update({ ...draft, fontSizePx: 25, theme: 'navy-gold' })
 
   return (
-    <Modal title="Console Settings" subtitle="Make Mission Control comfortable on your screen." onClose={onClose} size="large">
+    <Modal title={t('Console Settings')} subtitle={t('Make Mission Control comfortable on your screen.')} onClose={onClose} size="large">
       <div className="settings-editor-shell">
-        <nav className="settings-page-tabs" aria-label="Settings pages">
-          <button type="button" className={settingsPage === 'general' ? 'is-selected' : ''} aria-current={settingsPage === 'general' ? 'page' : undefined} onClick={() => setSettingsPage('general')}><MonitorUp size={14} /> General</button>
-          <button type="button" className={settingsPage === 'remote' ? 'is-selected' : ''} aria-current={settingsPage === 'remote' ? 'page' : undefined} onClick={() => setSettingsPage('remote')}><Smartphone size={14} /> Mobile Remote</button>
+        <nav className="settings-page-tabs" aria-label={t('Settings pages')}>
+          <button type="button" className={settingsPage === 'general' ? 'is-selected' : ''} aria-current={settingsPage === 'general' ? 'page' : undefined} onClick={() => setSettingsPage('general')}><MonitorUp size={14} /> {t('General')}</button>
+          <button type="button" className={settingsPage === 'remote' ? 'is-selected' : ''} aria-current={settingsPage === 'remote' ? 'page' : undefined} onClick={() => setSettingsPage('remote')}><Smartphone size={14} /> {t('Mobile Remote')}</button>
         </nav>
         {settingsPage === 'general' ? (
           <form className="editor-form settings-editor settings-editor--expanded" onSubmit={(event) => { event.preventDefault(); onSave(draft) }}>
+        <section className="settings-section settings-section--language">
+          <header className="settings-section__header">
+            <span><Languages size={17} /></span>
+            <div><strong>{t('Interface language')}</strong><small>{t('Choose the language used by Agent Console. Changes preview instantly.')}</small></div>
+          </header>
+          <div className="language-selector" role="group" aria-label={t('Language')}>
+            <button type="button" className={draft.language === 'zh-CN' ? 'is-selected' : ''} aria-pressed={draft.language === 'zh-CN'} onClick={() => update({ ...draft, language: 'zh-CN' })}>简体中文</button>
+            <button type="button" className={draft.language === 'en' ? 'is-selected' : ''} aria-pressed={draft.language === 'en'} onClick={() => update({ ...draft, language: 'en' })}>English</button>
+          </div>
+        </section>
+
         <section className="settings-section settings-section--core">
           <header className="settings-section__header">
             <span><ShieldCheck size={17} /></span>
-            <div><strong>Local Console Core</strong><small>The protected background service that owns local state and Agent monitoring.</small></div>
+            <div><strong>{t('Local Console Core')}</strong><small>{t('The protected background service that owns local state and Agent monitoring.')}</small></div>
           </header>
 
           <div className={`local-core-panel local-core-panel--${coreConnection.phase}`}>
             <div className="local-core-panel__summary" aria-live="polite">
-              <span><i /><strong>{CORE_CONNECTION_LABELS[coreConnection.phase]}</strong></span>
-              <small>{coreConnection.message}</small>
+              <span><i /><strong>{t(CORE_CONNECTION_LABELS[coreConnection.phase])}</strong></span>
+              <small>{message(coreConnection.message)}</small>
             </div>
             <div className="local-core-detail-grid">
-              <div><small>Transport</small><strong>Unix socket</strong></div>
-              <div><small>Network</small><strong>{coreHealth.tcpListening ? 'TCP active' : 'No TCP listener'}</strong></div>
-              <div><small>Core version</small><strong>v{coreHealth.appVersion}</strong></div>
-              <div><small>Protocol</small><strong>v{coreHealth.protocolVersion}</strong></div>
+              <div><small>{t('Transport')}</small><strong>{t('Unix socket')}</strong></div>
+              <div><small>{t('Network')}</small><strong>{t(coreHealth.tcpListening ? 'TCP active' : 'No TCP listener')}</strong></div>
+              <div><small>{t('Core version')}</small><strong>v{coreHealth.appVersion}</strong></div>
+              <div><small>{t('Protocol')}</small><strong>v{coreHealth.protocolVersion}</strong></div>
             </div>
-            <p><ShieldCheck size={13} /> Local-only mode: the socket is restricted to your Linux user and the Core does not listen on a network port.</p>
+            <p><ShieldCheck size={13} /> {t('Local-only mode: the socket is restricted to your Linux user and the Core does not listen on a network port.')}</p>
           </div>
         </section>
 
         <section className="settings-section settings-section--updates">
           <header className="settings-section__header">
             <span><Rocket size={17} /></span>
-            <div><strong>Application updates</strong><small>Check, download, verify, and install new Agent Console versions here.</small></div>
+            <div><strong>{t('Application updates')}</strong><small>{t('Check, download, verify, and install new Agent Console versions here.')}</small></div>
           </header>
 
           <div className={`update-panel update-panel--${updateState.phase}`}>
@@ -386,20 +396,20 @@ export function SettingsEditor({
                       : <Download size={20} />}
               </span>
               <div>
-                <strong>{updateHeading(updateState)}</strong>
-                <p>{updateState.message}</p>
+                <strong>{updateHeading(updateState, t)}</strong>
+                <p>{message(updateState.message)}</p>
               </div>
             </div>
 
             <div className="update-version-grid">
-              <div><small>Installed</small><strong>v{updateState.currentVersion}</strong></div>
-              <div><small>Package</small><strong>{installationKindLabel(updateState.installationKind)}</strong></div>
-              <div><small>Available</small><strong>{updateState.availableVersion ? `v${updateState.availableVersion}` : '—'}</strong></div>
-              <div><small>Last checked</small><strong>{updateState.lastCheckedAt ? new Date(updateState.lastCheckedAt).toLocaleString() : 'Not yet'}</strong></div>
+              <div><small>{t('Installed')}</small><strong>v{updateState.currentVersion}</strong></div>
+              <div><small>{t('Package')}</small><strong>{t(installationKindLabel(updateState.installationKind))}</strong></div>
+              <div><small>{t('Available')}</small><strong>{updateState.availableVersion ? `v${updateState.availableVersion}` : '—'}</strong></div>
+              <div><small>{t('Last checked')}</small><strong>{updateState.lastCheckedAt ? formatDateTime(updateState.lastCheckedAt) : t('Not yet')}</strong></div>
             </div>
 
             {updateState.phase === 'downloading' && updateState.progress && (
-              <div className="update-progress" aria-label={`Download progress ${updateState.progress.percent}%`}>
+              <div className="update-progress" aria-label={t('Download progress {{percent}}%', { percent: updateState.progress.percent })}>
                 <div><span style={{ width: `${updateState.progress.percent}%` }} /></div>
                 <footer>
                   <strong>{updateState.progress.percent.toFixed(1)}%</strong>
@@ -411,20 +421,20 @@ export function SettingsEditor({
 
             {updateState.releaseNotes && (
               <div className="update-release-notes">
-                <strong>{updateState.releaseName || `What’s new in v${updateState.availableVersion}`}</strong>
+                <strong>{updateState.releaseName || t('What’s new in v{{version}}', { version: updateState.availableVersion ?? '' })}</strong>
                 <pre>{updateState.releaseNotes}</pre>
               </div>
             )}
 
             <div className="update-panel__actions">
-              <span><ShieldCheck size={13} /> Downloads are integrity-checked before installation.</span>
+              <span><ShieldCheck size={13} /> {t('Downloads are integrity-checked before installation.')}</span>
               <div>
-                <button type="button" className="action-button" onClick={onOpenReleasesPage}><ExternalLink size={14} /> Releases</button>
-                {updateState.canCheck && <button type="button" className="action-button action-button--primary" onClick={onCheckForUpdates}><RefreshCw size={14} /> Check now</button>}
-                {updateState.phase === 'checking' && <button type="button" className="action-button action-button--primary" disabled><RefreshCw className="is-spinning" size={14} /> Checking…</button>}
-                {updateState.canDownload && <button type="button" className="action-button action-button--primary" onClick={onDownloadUpdate}><Download size={14} /> Download update</button>}
-                {updateState.phase === 'downloading' && <button type="button" className="action-button action-button--primary" disabled><RefreshCw className="is-spinning" size={14} /> Downloading…</button>}
-                {updateState.canInstall && <button type="button" className="action-button action-button--primary update-install-button" onClick={onInstallUpdate}><Rocket size={14} /> Restart and update</button>}
+                <button type="button" className="action-button" onClick={onOpenReleasesPage}><ExternalLink size={14} /> {t('Releases')}</button>
+                {updateState.canCheck && <button type="button" className="action-button action-button--primary" onClick={onCheckForUpdates}><RefreshCw size={14} /> {t('Check now')}</button>}
+                {updateState.phase === 'checking' && <button type="button" className="action-button action-button--primary" disabled><RefreshCw className="is-spinning" size={14} /> {t('Checking…')}</button>}
+                {updateState.canDownload && <button type="button" className="action-button action-button--primary" onClick={onDownloadUpdate}><Download size={14} /> {t('Download update')}</button>}
+                {updateState.phase === 'downloading' && <button type="button" className="action-button action-button--primary" disabled><RefreshCw className="is-spinning" size={14} /> {t('Downloading…')}</button>}
+                {updateState.canInstall && <button type="button" className="action-button action-button--primary update-install-button" onClick={onInstallUpdate}><Rocket size={14} /> {t('Restart and update')}</button>}
               </div>
             </div>
           </div>
@@ -433,8 +443,8 @@ export function SettingsEditor({
         <section className="settings-section settings-section--font">
           <header className="settings-section__header">
             <span><Type size={17} /></span>
-            <div><strong>Interface size</strong><small>Scales all text, controls, cards, and spacing together. Changes preview instantly.</small></div>
-            <button type="button" className="text-button" onClick={resetAppearance}><RotateCcw size={14} /> Default</button>
+            <div><strong>{t('Interface size')}</strong><small>{t('Scales all text, controls, cards, and spacing together. Changes preview instantly.')}</small></div>
+            <button type="button" className="text-button" onClick={resetAppearance}><RotateCcw size={14} /> {t('Default')}</button>
           </header>
 
           <div className="font-size-control">
@@ -447,7 +457,7 @@ export function SettingsEditor({
                 step={1}
                 value={draft.fontSizePx}
                 onChange={(event) => setFontSize(Number(event.target.value))}
-                aria-label="Interface font size"
+                aria-label={t('Interface font size')}
               />
               <span className="font-size-readout__large">A</span>
               <label>
@@ -457,12 +467,12 @@ export function SettingsEditor({
                   max={50}
                   value={draft.fontSizePx}
                   onChange={(event) => setFontSize(Number(event.target.value))}
-                  aria-label="Interface font size in pixels"
+                  aria-label={t('Interface font size in pixels')}
                 />
                 <span>px</span>
               </label>
             </div>
-            <div className="font-size-presets" aria-label="Font size presets">
+            <div className="font-size-presets" aria-label={t('Font size presets')}>
               {[12, 18, 25, 32, 40, 50].map((size) => (
                 <button type="button" key={size} className={draft.fontSizePx === size ? 'is-selected' : ''} onClick={() => setFontSize(size)}>{size}px</button>
               ))}
@@ -473,7 +483,7 @@ export function SettingsEditor({
         <section className="settings-section settings-section--themes">
           <header className="settings-section__header">
             <span><Palette size={17} /></span>
-            <div><strong>Color world</strong><small>Choose a complete visual system, from calm paper themes to luminous night control rooms.</small></div>
+            <div><strong>{t('Color world')}</strong><small>{t('Choose a complete visual system, from calm paper themes to luminous night control rooms.')}</small></div>
           </header>
           <div className="theme-grid">
             {THEMES.map((theme) => (
@@ -488,9 +498,9 @@ export function SettingsEditor({
                   {theme.swatches.map((color, index) => <i key={`${color}-${index}`} style={{ background: color }} />)}
                 </span>
                 <span className="theme-card__copy">
-                  <strong>{theme.name}</strong>
-                  <small>{theme.origin}</small>
-                  <em>{theme.description}</em>
+                  <strong>{t(theme.name)}</strong>
+                  <small>{t(theme.origin)}</small>
+                  <em>{t(theme.description)}</em>
                 </span>
                 <span className="theme-card__check">{draft.theme === theme.id ? <Check size={14} /> : null}</span>
               </button>
@@ -501,21 +511,21 @@ export function SettingsEditor({
         <section className="settings-section settings-section--system">
           <header className="settings-section__header">
             <span><MonitorUp size={17} /></span>
-            <div><strong>System preferences</strong><small>Terminal behavior and local monitoring frequency.</small></div>
+            <div><strong>{t('System preferences')}</strong><small>{t('Terminal behavior and local monitoring frequency.')}</small></div>
           </header>
           <div className="settings-system-grid">
-            <label><span>Default terminal</span><select value={draft.defaultTerminal} onChange={(event) => setDraft({ ...draft, defaultTerminal: event.target.value as TerminalApp })}><option value="auto">Automatic — use first available</option>{availableTerminals.map((terminal) => <option key={terminal} value={terminal}>{terminal}</option>)}</select></label>
-            <label><span>Live scan interval</span><select value={draft.scanIntervalMs} onChange={(event) => setDraft({ ...draft, scanIntervalMs: Number(event.target.value) })}><option value={1000}>Every second</option><option value={2500}>Every 2.5 seconds</option><option value={5000}>Every 5 seconds</option><option value={10000}>Every 10 seconds</option></select></label>
+            <label><span>{t('Default terminal')}</span><select value={draft.defaultTerminal} onChange={(event) => setDraft({ ...draft, defaultTerminal: event.target.value as TerminalApp })}><option value="auto">{t('Automatic — use first available')}</option>{availableTerminals.map((terminal) => <option key={terminal} value={terminal}>{terminal}</option>)}</select></label>
+            <label><span>{t('Live scan interval')}</span><select value={draft.scanIntervalMs} onChange={(event) => setDraft({ ...draft, scanIntervalMs: Number(event.target.value) })}><option value={1000}>{t('Every second')}</option><option value={2500}>{t('Every 2.5 seconds')}</option><option value={5000}>{t('Every 5 seconds')}</option><option value={10000}>{t('Every 10 seconds')}</option></select></label>
           </div>
-          <label className="toggle-row"><input type="checkbox" checked={draft.compactMode} onChange={(event) => setDraft({ ...draft, compactMode: event.target.checked })} /><span><strong>Compact Agent cards</strong><small>Fit more Agents on screen.</small></span></label>
+          <label className="toggle-row"><input type="checkbox" checked={draft.compactMode} onChange={(event) => setDraft({ ...draft, compactMode: event.target.checked })} /><span><strong>{t('Compact Agent cards')}</strong><small>{t('Fit more Agents on screen.')}</small></span></label>
         </section>
 
-            <footer className="editor-actions"><span /><div><button type="button" className="action-button" onClick={onClose}>Cancel</button><button type="submit" className="action-button action-button--primary">Save Settings</button></div></footer>
+            <footer className="editor-actions"><span /><div><button type="button" className="action-button" onClick={onClose}>{t('Cancel')}</button><button type="submit" className="action-button action-button--primary">{t('Save Settings')}</button></div></footer>
           </form>
         ) : (
           <div className="settings-editor settings-editor--expanded remote-settings-page">
             <RemoteControlSettings />
-            <footer className="editor-actions"><span /><button type="button" className="action-button" onClick={onClose}>Close</button></footer>
+            <footer className="editor-actions"><span /><button type="button" className="action-button" onClick={onClose}>{t('Close')}</button></footer>
           </div>
         )}
       </div>

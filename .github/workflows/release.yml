@@ -18,12 +18,14 @@ on:
       - tests/remote-*.test.tsx
       - tests/vps-*.test.ts
       - docs/REMOTE-DEPLOYMENT.md
+      - scripts/create-deb-x86_64-alias.mjs
       - scripts/verify-packaged-core.mjs
       - scripts/verify-systemd-core.mjs
       - scripts/verify-remote-deployment.mjs
       - package.json
       - package-lock.json
       - release-notes.md
+      - tests/deb-x86_64-alias.test.mjs
       - .github/workflows/release.yml
   workflow_dispatch:
 
@@ -68,6 +70,7 @@ jobs:
           required_assets=(
             "Agent-Console-${package_version}-x86_64.AppImage"
             "Agent-Console-${package_version}-amd64.deb"
+            "Agent-Console-${package_version}-x86_64.deb"
             "latest-linux.yml"
             "Agent-Console-${package_version}-SHA256SUMS.txt"
           )
@@ -116,7 +119,11 @@ jobs:
         id: installed_deb
         shell: bash
         run: |
-          deb_path="release/Agent-Console-${{ steps.release.outputs.version }}-amd64.deb"
+          canonical_deb_path="release/Agent-Console-${{ steps.release.outputs.version }}-amd64.deb"
+          deb_path="release/Agent-Console-${{ steps.release.outputs.version }}-x86_64.deb"
+          cmp --silent "$canonical_deb_path" "$deb_path"
+          test "$(dpkg-deb --field "$canonical_deb_path" Architecture)" = amd64
+          test "$(dpkg-deb --field "$deb_path" Architecture)" = amd64
           package_name="$(dpkg-deb --field "$deb_path" Package)"
           sudo apt-get install -y tmux "./$deb_path"
           installed_command="$(command -v agent-console)"
@@ -176,7 +183,9 @@ jobs:
           sha256sum \
             "Agent-Console-${RELEASE_VERSION}-x86_64.AppImage" \
             "Agent-Console-${RELEASE_VERSION}-amd64.deb" \
+            "Agent-Console-${RELEASE_VERSION}-x86_64.deb" \
             latest-linux.yml > "$checksum_file"
+          sha256sum --check "$checksum_file"
 
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release edit "$RELEASE_TAG" \
@@ -194,6 +203,7 @@ jobs:
           gh release upload "$RELEASE_TAG" \
             "Agent-Console-${RELEASE_VERSION}-x86_64.AppImage" \
             "Agent-Console-${RELEASE_VERSION}-amd64.deb" \
+            "Agent-Console-${RELEASE_VERSION}-x86_64.deb" \
             latest-linux.yml \
             "$checksum_file" \
             --clobber
@@ -202,6 +212,7 @@ jobs:
           for asset in \
             "Agent-Console-${RELEASE_VERSION}-x86_64.AppImage" \
             "Agent-Console-${RELEASE_VERSION}-amd64.deb" \
+            "Agent-Console-${RELEASE_VERSION}-x86_64.deb" \
             latest-linux.yml \
             "$checksum_file"; do
             grep -Fxq "$asset" <<< "$published_assets"

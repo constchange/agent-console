@@ -17,6 +17,7 @@ import type {
   RemoteSignInInput,
   RemoteSignUpInput,
 } from './remote-settings'
+import type { UiLanguage } from './locales'
 
 export type AgentKind =
   | 'codex'
@@ -89,6 +90,7 @@ export interface AgentConfig {
 }
 
 export interface ConsoleSettings {
+  language: UiLanguage
   defaultTerminal: TerminalApp
   scanIntervalMs: number
   compactMode: boolean

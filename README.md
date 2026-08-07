@@ -18,7 +18,8 @@ Agent Console 是运行在 Linux Mint 上的本地 AI Team 控制中心。它不
 - deb 安装包提供 `agent-console-remote` 管理命令；`validate/install/render/doctor/uninstall` 默认不连接 VPS，只有显式 `doctor --network` 和 systemd 的 `tunnel-run` 会访问网络。
 - Settings 内置应用更新中心：自动或手动检查新版，显示更新说明与下载进度，下载完成后可直接重启并安装。
 - AppImage 与 deb 都支持应用内更新；AppImage 直接自我替换，deb 安装时由 Linux 弹出系统授权窗口。
-- 主分支中的版本号或发布说明更新后，GitHub 会自动测试、打包并发布 AppImage、deb 与更新元数据；版本标签仍可用于重新触发核验。
+- 主分支中的版本号升级并配套更新发布说明后，GitHub 会自动测试、打包并发布 AppImage、deb 与更新元数据；已发布版本不会被新代码覆盖。
+- Settings → General 可在简体中文与 English 之间即时切换；首次安装会跟随系统语言，原有安装升级后会保留全部 Project、Agent、主题、字号和 tmux Session。
 - 默认采用象牙白、海军蓝、金色的明亮高对比主题。
 - Settings 可将整个界面字号从 5 px 调到 50 px；默认 25 px，调节时实时预览并自动保存。
 - 高分屏缩放由 Electron 原生处理，避免整页 CSS 缩放造成浮层与鼠标命中位置短暂错位。
@@ -87,11 +88,14 @@ npm run dev
 完成后，安装包在 `release` 文件夹中：
 
 - `.AppImage`：不需要安装，赋予执行权限后即可双击运行。
-- `.deb`：像普通 Linux 安装包一样双击安装。
+- `Agent-Console-<版本号>-x86_64.deb`：适用于常见的 Intel/AMD 64 位电脑，可以像普通 Linux 安装包一样双击安装。
+- `Agent-Console-<版本号>-amd64.deb`：同一个安装包的 Debian 标准命名版本，与 `x86_64.deb` 逐字节完全一致。
+
+两份 `.deb` 不需要都下载；如果你不熟悉 Linux 的架构名称，直接选择文件名带 `x86_64` 的一份即可。包内仍使用 Debian 规定的 `amd64` 架构标记，以保证系统安装和应用内更新正常工作。
 
 ## 第一次使用
 
-1. 点击左下角齿轮进入 **Settings**，先把字号和主题调到舒服的状态。
+1. 点击左下角齿轮进入 **Settings → General**，选择简体中文或 English，再把字号和主题调到舒服的状态。
 2. 点击右上角 **Discover**。
 3. 找到正在运行的 Codex、Backend 或 Worker。
 4. 点击 **Add to Project**，选择 Project 并保存。
@@ -160,8 +164,10 @@ npm run build           # 生产构建
 npm run test:project-edit-visual # 真实删除 Agent 后立即编辑 Project，并跨扫描/缩放反复输入的回归检查
 npm run dev             # 开发运行
 npm run package:linux   # 生成 AppImage 与 deb
-npm run release:linux   # 测试、构建并发布 GitHub Release（需要发布权限时使用）
+npm run release:linux   # 发布前本地验收，并生成 AppImage、amd64 deb 与 x86_64 deb
 ```
+
+正式 GitHub Release 统一由主分支的发布工作流创建，避免手工发布时漏传安装包、校验文件或更新元数据。
 
 主要结构：
 

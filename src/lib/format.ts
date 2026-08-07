@@ -1,4 +1,5 @@
 import type { AgentKind, AgentStatus } from '../../shared/types'
+import { createI18n, type I18n } from './i18n'
 
 export const STATUS_META: Record<AgentStatus, { label: string; color: string; glow: string }> = {
   running: { label: 'Running', color: '#3ddc97', glow: 'rgba(61, 220, 151, .18)' },
@@ -23,33 +24,25 @@ export const KIND_LABEL: Record<AgentKind, string> = {
   process: 'Process',
 }
 
-export function formatDuration(seconds: number): string {
-  if (!seconds || seconds < 0) return '—'
-  if (seconds < 60) return `${Math.floor(seconds)}s`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m ${Math.floor(seconds % 60)}s`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ${minutes % 60}m`
-  const days = Math.floor(hours / 24)
-  return `${days}d ${hours % 24}h`
+const ENGLISH_I18N = createI18n('en')
+
+export function formatDuration(seconds: number, i18n: I18n = ENGLISH_I18N): string {
+  return i18n.formatDuration(seconds)
 }
 
-export function formatPercent(value: number): string {
-  if (!Number.isFinite(value)) return '0.0%'
-  return `${value.toFixed(value >= 10 ? 0 : 1)}%`
+export function formatPercent(value: number, i18n: I18n = ENGLISH_I18N): string {
+  return i18n.formatPercent(value)
 }
 
-export function shortPath(value: string): string {
-  if (!value) return 'Not set'
+export function shortPath(value: string, i18n: I18n = ENGLISH_I18N): string {
+  if (!value) return i18n.t('Not set')
   const parts = value.split('/').filter(Boolean)
   if (parts.length <= 3) return value
   return `…/${parts.slice(-3).join('/')}`
 }
 
-export function timeLabel(value: string): string {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '—'
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+export function timeLabel(value: string, i18n: I18n = ENGLISH_I18N): string {
+  return i18n.formatTime(value)
 }
 
 export function slugify(value: string): string {

@@ -9,6 +9,7 @@ import type {
   UpdateState,
 } from '../../shared/types'
 import type { RemoteSettingsState } from '../../shared/remote-settings'
+import { detectBrowserLanguage } from './i18n'
 
 let previewState: ConsoleState = {
   version: 1,
@@ -19,6 +20,7 @@ let previewState: ConsoleState = {
   ],
   agents: [],
   settings: {
+    language: detectBrowserLanguage(),
     defaultTerminal: 'auto',
     scanIntervalMs: 2_500,
     compactMode: true,
