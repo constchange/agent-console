@@ -126,6 +126,8 @@ jobs:
           test "$(dpkg-deb --field "$deb_path" Architecture)" = amd64
           package_name="$(dpkg-deb --field "$deb_path" Package)"
           sudo apt-get install -y tmux "./$deb_path"
+          command -v wmctrl
+          dpkg-query -S "$(command -v wmctrl)" >/dev/null
           installed_command="$(command -v agent-console)"
           installed_executable="$(readlink -f "$installed_command")"
           test -n "$installed_executable"

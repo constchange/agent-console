@@ -1,6 +1,6 @@
 {
   "name": "agent-console",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "A local mission control dashboard for Codex CLI, tmux, terminals, backends and workers.",
   "homepage": "https://github.com/constchange/agent-console",
   "repository": {
@@ -115,6 +115,18 @@
       ]
     },
     "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0",
+        "wmctrl"
+      ],
       "afterInstall": "resources/remote/deb/after-install.tpl",
       "afterRemove": "resources/remote/deb/after-remove.tpl"
     }

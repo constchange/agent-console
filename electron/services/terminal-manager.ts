@@ -1,4 +1,5 @@
 import { execFile, spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import os from 'node:os'
 import { promisify } from 'node:util'
@@ -20,13 +21,56 @@ const SUPPORTED_TERMINALS: Exclude<TerminalApp, 'auto'>[] = [
   'x-terminal-emulator',
 ]
 
-async function exists(command: string): Promise<boolean> {
-  try {
-    await execFileAsync('which', [command], { timeout: 1_500 })
-    return true
-  } catch {
-    return false
-  }
+interface ExecOptions {
+  timeout: number
+  maxBuffer?: number
+}
+
+interface ExecResult {
+  stdout: string
+  stderr: string
+}
+
+export interface TerminalManagerDependencies {
+  execFile: (executable: string, args: string[], options: ExecOptions) => Promise<ExecResult>
+  spawnDetached: (executable: string, args: string[]) => void
+  readlink: (target: string) => Promise<string>
+  writeFile: (target: string, data: string) => Promise<void>
+  processAlive: (pid: number) => boolean
+  delay: (milliseconds: number) => Promise<void>
+}
+
+export interface DesktopWindowRecord {
+  id: string
+  pid: number | null
+  title: string
+}
+
+const defaultDependencies: TerminalManagerDependencies = {
+  execFile: async (executable, args, options) => {
+    const { stdout, stderr } = await execFileAsync(executable, args, {
+      ...options,
+      encoding: 'utf8',
+    })
+    return { stdout: String(stdout), stderr: String(stderr) }
+  },
+  spawnDetached: (executable, args) => {
+    const child = spawn(executable, args, { detached: true, stdio: 'ignore' })
+    child.unref()
+  },
+  readlink: (target) => fs.readlink(target),
+  writeFile: async (target, data) => {
+    await fs.writeFile(target, data, { flag: 'a' })
+  },
+  processAlive: (pid) => {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  },
+  delay: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
 }
 
 function shellQuote(value: string): string {
@@ -34,20 +78,47 @@ function shellQuote(value: string): string {
 }
 
 function safeTitle(value: string): string {
-  return value.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 120)
+  return value.replace(/[\u0000-\u001f\u007f]/g, '').trim()
+}
+
+function exactWindowNamePattern(value: string): string {
+  return `^${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`
+}
+
+export function terminalWindowIdentity(agentId: string): string {
+  const digest = createHash('sha256').update(agentId).digest('hex').slice(0, 16)
+  return `[AC:${digest}]`
 }
 
 export function windowTitle(agent: AgentConfig): string {
-  return `Agent Console · ${safeTitle(agent.terminalTitle || `${agent.emoji} ${agent.name}`)}`
+  const label = safeTitle(agent.terminalTitle || `${agent.emoji} ${agent.name}`).slice(0, 88) || 'Agent'
+  return `Agent Console · ${label} · ${terminalWindowIdentity(agent.id)}`
+}
+
+export function parseWmctrlWindows(output: string): DesktopWindowRecord[] {
+  const windows: DesktopWindowRecord[] = []
+  for (const line of output.split('\n')) {
+    const match = line.match(/^\s*(\S+)\s+\S+\s+(-?\d+)\s+\S+\s+(.*)$/)
+    if (!match) continue
+    windows.push({
+      id: match[1],
+      pid: Number(match[2]) > 0 ? Number(match[2]) : null,
+      title: match[3],
+    })
+  }
+  return windows
 }
 
 export class TerminalManager {
   private capabilities: SystemCapabilities | null = null
-  private readonly knownOpenTitles = new Set<string>()
+  private readonly knownOpenAgents = new Map<string, string>()
+  private readonly windowIdByAgent = new Map<string, string>()
+  private readonly dependencies: TerminalManagerDependencies
   private settings: ConsoleSettings
 
-  constructor(settings: ConsoleSettings) {
+  constructor(settings: ConsoleSettings, dependencies: Partial<TerminalManagerDependencies> = {}) {
     this.settings = settings
+    this.dependencies = { ...defaultDependencies, ...dependencies }
   }
 
   updateSettings(settings: ConsoleSettings): void {
@@ -57,11 +128,11 @@ export class TerminalManager {
   async getCapabilities(force = false): Promise<SystemCapabilities> {
     if (this.capabilities && !force) return this.capabilities
     const checks = await Promise.all([
-      ...SUPPORTED_TERMINALS.map(async (terminal) => [terminal, await exists(terminal)] as const),
-      exists('tmux'),
-      exists('wmctrl'),
-      exists('xdotool'),
-      exists('docker'),
+      ...SUPPORTED_TERMINALS.map(async (terminal) => [terminal, await this.exists(terminal)] as const),
+      this.exists('tmux'),
+      this.exists('wmctrl'),
+      this.exists('xdotool'),
+      this.exists('docker'),
     ])
     const terminalChecks = checks.slice(0, SUPPORTED_TERMINALS.length) as Array<readonly [TerminalApp, boolean]>
     const [tmux, wmctrl, xdotool, docker] = checks.slice(SUPPORTED_TERMINALS.length) as boolean[]
@@ -77,32 +148,49 @@ export class TerminalManager {
     return this.capabilities
   }
 
-  async listWindowTitles(): Promise<string[]> {
+  async listOpenAgentIds(agents: AgentConfig[]): Promise<Set<string>> {
     const capabilities = await this.getCapabilities()
-    if (!capabilities.wmctrl) return [...this.knownOpenTitles]
-    try {
-      const { stdout } = await execFileAsync('wmctrl', ['-l'], { timeout: 1_500, maxBuffer: 512_000 })
-      return stdout
-        .split('\n')
-        .map((line) => line.trim().split(/\s+/, 4).length >= 4 ? line.trim().replace(/^\S+\s+\S+\s+\S+\s+/, '') : '')
-        .filter(Boolean)
-    } catch {
-      return [...this.knownOpenTitles]
+    if (capabilities.wmctrl) {
+      const windows = await this.listWmctrlWindows()
+      if (windows) {
+        const open = new Set<string>()
+        const windowIds = new Set(windows.map((item) => item.id))
+        for (const agent of agents) {
+          const exact = windows.find((item) => item.title === windowTitle(agent))
+          if (exact) this.windowIdByAgent.set(agent.id, exact.id)
+          const knownId = exact?.id ?? this.windowIdByAgent.get(agent.id)
+          if (knownId && windowIds.has(knownId)) open.add(agent.id)
+          else this.windowIdByAgent.delete(agent.id)
+        }
+        return open
+      }
     }
+
+    if (capabilities.xdotool) {
+      const open = new Set<string>()
+      await Promise.all(agents.map(async (agent) => {
+        const id = await this.findOpenXdotoolWindow(agent, windowTitle(agent))
+        if (id) open.add(agent.id)
+      }))
+      return open
+    }
+
+    return new Set(agents.filter((agent) => this.knownOpenAgents.has(agent.id)).map((agent) => agent.id))
   }
 
   async open(agent: AgentConfig): Promise<ActionResult> {
     const title = windowTitle(agent)
     await this.applyTitleToExistingTerminal(agent, title)
-    if (await this.focus(title)) {
-      this.knownOpenTitles.add(title)
+    if (await this.focus(agent, title)) {
+      this.knownOpenAgents.set(agent.id, title)
       return { ok: true, action: 'focused', message: `${agent.name} terminal focused` }
     }
-    if (this.knownOpenTitles.has(title)) {
+    const capabilities = await this.getCapabilities()
+    if (this.knownOpenAgents.has(agent.id) && !capabilities.wmctrl && !capabilities.xdotool) {
       return {
         ok: true,
         action: 'already-open',
-        message: `${agent.name} terminal is already open; install wmctrl for automatic focus`,
+        message: `${agent.name} terminal is already open, but automatic focus is unavailable`,
       }
     }
 
@@ -110,11 +198,10 @@ export class TerminalManager {
       return {
         ok: false,
         action: 'focus-unavailable',
-        message: `The ${agent.name} process is running, but its terminal window could not be focused. Install wmctrl and try again.`,
+        message: `The ${agent.name} process is running, but Agent Console could not identify its exact terminal window.`,
       }
     }
 
-    const capabilities = await this.getCapabilities()
     const terminal = this.selectTerminal(agent, capabilities.terminals)
     if (!terminal) {
       return {
@@ -135,9 +222,8 @@ export class TerminalManager {
 
     try {
       const { executable, args } = this.terminalInvocation(terminal, title, terminalCommand)
-      const child = spawn(executable, args, { detached: true, stdio: 'ignore' })
-      child.unref()
-      this.knownOpenTitles.add(title)
+      this.dependencies.spawnDetached(executable, args)
+      this.knownOpenAgents.set(agent.id, title)
       return { ok: true, action: 'opened', message: `${agent.name} opened in ${terminal}` }
     } catch (error) {
       return { ok: false, action: 'error', message: error instanceof Error ? error.message : String(error) }
@@ -147,14 +233,16 @@ export class TerminalManager {
   async close(agent: AgentConfig): Promise<ActionResult> {
     const title = windowTitle(agent)
     const capabilities = await this.getCapabilities()
+    await this.applyTitleToExistingTerminal(agent, title)
     try {
       if (capabilities.wmctrl) {
-        await execFileAsync('wmctrl', ['-c', title], { timeout: 2_000 })
+        const target = await this.findWmctrlWindow(agent, title, 5)
+        if (!target) throw new Error('Terminal window not found')
+        await this.dependencies.execFile('wmctrl', ['-i', '-c', target.id], { timeout: 2_000 })
       } else if (capabilities.xdotool) {
-        const { stdout } = await execFileAsync('xdotool', ['search', '--name', title], { timeout: 1_500 })
-        const id = stdout.trim().split('\n')[0]
+        const id = await this.findXdotoolWindow(agent, title)
         if (!id) throw new Error('Terminal window not found')
-        await execFileAsync('xdotool', ['windowclose', id], { timeout: 1_500 })
+        await this.dependencies.execFile('xdotool', ['windowclose', id], { timeout: 1_500 })
       } else {
         return {
           ok: false,
@@ -162,16 +250,30 @@ export class TerminalManager {
           message: 'Install wmctrl to let Agent Console close external terminal windows.',
         }
       }
-      this.knownOpenTitles.delete(title)
+      this.forgetWindow(agent.id)
       return {
         ok: true,
         action: 'closed',
         message: `${agent.name} terminal closed; its tmux session keeps running`,
       }
     } catch {
-      this.knownOpenTitles.delete(title)
+      this.forgetWindow(agent.id)
       return { ok: false, action: 'not-found', message: `${agent.name} terminal window was not found` }
     }
+  }
+
+  private async exists(command: string): Promise<boolean> {
+    try {
+      await this.dependencies.execFile('which', [command], { timeout: 1_500 })
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  private forgetWindow(agentId: string): void {
+    this.knownOpenAgents.delete(agentId)
+    this.windowIdByAgent.delete(agentId)
   }
 
   private selectTerminal(agent: AgentConfig, available: TerminalApp[]): TerminalApp | null {
@@ -199,43 +301,111 @@ export class TerminalManager {
     }
   }
 
-  private async focus(title: string): Promise<boolean> {
+  private async focus(agent: AgentConfig, title: string): Promise<boolean> {
     const capabilities = await this.getCapabilities()
-    try {
-      if (capabilities.wmctrl) {
-        await execFileAsync('wmctrl', ['-a', title], { timeout: 1_500 })
-        return true
+    if (capabilities.wmctrl) {
+      try {
+        const target = await this.findWmctrlWindow(agent, title, 5)
+        if (target) {
+          await this.dependencies.execFile('wmctrl', ['-i', '-a', target.id], { timeout: 1_500 })
+          this.windowIdByAgent.set(agent.id, target.id)
+          return true
+        }
+      } catch {
+        // Fall through to xdotool when both helpers are available.
       }
-      if (capabilities.xdotool) {
-        const { stdout } = await execFileAsync('xdotool', ['search', '--onlyvisible', '--name', title], {
-          timeout: 1_500,
-        })
-        const id = stdout.trim().split('\n')[0]
+    }
+    if (capabilities.xdotool) {
+      try {
+        const id = await this.findXdotoolWindow(agent, title)
         if (!id) return false
-        await execFileAsync('xdotool', ['windowactivate', '--sync', id], { timeout: 1_500 })
+        await this.dependencies.execFile('xdotool', ['windowactivate', '--sync', id], { timeout: 1_500 })
+        this.windowIdByAgent.set(agent.id, id)
         return true
+      } catch {
+        return false
       }
-    } catch {
-      return false
     }
     return false
   }
 
-  private isProcessAlive(pid: number): boolean {
+  private async listWmctrlWindows(): Promise<DesktopWindowRecord[] | null> {
     try {
-      process.kill(pid, 0)
-      return true
+      const { stdout } = await this.dependencies.execFile('wmctrl', ['-lp'], {
+        timeout: 1_500,
+        maxBuffer: 512_000,
+      })
+      return parseWmctrlWindows(stdout)
     } catch {
-      return false
+      return null
     }
+  }
+
+  private async findWmctrlWindow(
+    agent: AgentConfig,
+    title: string,
+    attempts: number,
+  ): Promise<DesktopWindowRecord | null> {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const windows = await this.listWmctrlWindows()
+      if (!windows) return null
+      const exact = windows.find((item) => item.title === title)
+      if (exact) {
+        this.windowIdByAgent.set(agent.id, exact.id)
+        return exact
+      }
+      if (attempt + 1 < attempts) await this.dependencies.delay(45)
+    }
+    return null
+  }
+
+  private async findXdotoolWindow(agent: AgentConfig, title: string): Promise<string | null> {
+    const knownId = this.windowIdByAgent.get(agent.id)
+    if (knownId) {
+      try {
+        const { stdout } = await this.dependencies.execFile('xdotool', ['getwindowname', knownId], { timeout: 1_000 })
+        if (stdout.trim() === title) return knownId
+      } catch {
+        this.windowIdByAgent.delete(agent.id)
+      }
+    }
+    try {
+      const { stdout } = await this.dependencies.execFile(
+        'xdotool',
+        ['search', '--onlyvisible', '--name', exactWindowNamePattern(title)],
+        { timeout: 1_500, maxBuffer: 256_000 },
+      )
+      const id = stdout.trim().split('\n').find(Boolean) ?? null
+      if (id) this.windowIdByAgent.set(agent.id, id)
+      return id
+    } catch {
+      return null
+    }
+  }
+
+  private async findOpenXdotoolWindow(agent: AgentConfig, title: string): Promise<string | null> {
+    const knownId = this.windowIdByAgent.get(agent.id)
+    if (knownId) {
+      try {
+        await this.dependencies.execFile('xdotool', ['getwindowname', knownId], { timeout: 1_000 })
+        return knownId
+      } catch {
+        this.windowIdByAgent.delete(agent.id)
+      }
+    }
+    return this.findXdotoolWindow(agent, title)
+  }
+
+  private isProcessAlive(pid: number): boolean {
+    return this.dependencies.processAlive(pid)
   }
 
   private async applyTitleToExistingTerminal(agent: AgentConfig, title: string): Promise<void> {
     if (!agent.pid || !this.isProcessAlive(agent.pid)) return
     try {
-      const stdoutTarget = await fs.readlink(`/proc/${agent.pid}/fd/1`)
+      const stdoutTarget = await this.dependencies.readlink(`/proc/${agent.pid}/fd/1`)
       if (!stdoutTarget.startsWith('/dev/pts/')) return
-      await fs.writeFile(stdoutTarget, `\u001b]0;${safeTitle(title)}\u0007`, { flag: 'a' })
+      await this.dependencies.writeFile(stdoutTarget, `\u001b]0;${safeTitle(title)}\u0007`)
     } catch {
       // Some processes do not own an interactive TTY. They remain manageable by PID.
     }

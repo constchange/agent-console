@@ -18,6 +18,10 @@ describe('interface language', () => {
     expect(chinese.message('Agent Console v0.5.1 is available.')).toBe('Agent Console v0.5.1 可用。')
     expect(chinese.message('You already have the latest version, v0.5.1.')).toBe('当前已是最新版本 v0.5.1。')
     expect(chinese.message('Review terminal focused')).toBe('Review 的终端已聚焦')
+    expect(chinese.message('Review terminal is already open, but automatic focus is unavailable'))
+      .toBe('Review 的终端已打开，但暂时无法自动聚焦')
+    expect(chinese.message('The Review process is running, but Agent Console could not identify its exact terminal window.'))
+      .toBe('Review 进程正在运行，但 Agent Console 无法准确识别它的终端窗口。')
     expect(chinese.message('Core request config.commit timed out after 15000 ms.')).toBe('Core 请求 config.commit 在 15000 毫秒后超时。')
 
     const english = createI18n('en')

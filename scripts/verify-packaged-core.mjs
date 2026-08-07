@@ -273,6 +273,17 @@ async function assertDebMaintainerScripts(controlDirectory) {
   invariant(postRemove.includes("update-alternatives --remove 'agent-console-remote' \"$REMOTE_TARGET\""), 'deb postrm does not remove the Remote alternative')
 }
 
+async function assertDebRuntimeDependencies(controlDirectory) {
+  const raw = await fs.readFile(path.join(controlDirectory, 'control'), 'utf8')
+  const unfolded = raw.replace(/\n[ \t]+/g, ' ')
+  const depends = unfolded.match(/^Depends:\s*(.+)$/mu)?.[1] ?? ''
+  const dependencyNames = new Set(depends.split(',').map((entry) => entry.trim().split(/[ (|]/u)[0]).filter(Boolean))
+  invariant(dependencyNames.has('wmctrl'), 'deb does not install the required exact-window focus helper')
+  for (const baseline of ['libgtk-3-0', 'libnss3', 'xdg-utils', 'libsecret-1-0']) {
+    invariant(dependencyNames.has(baseline), `deb lost required Electron runtime dependency ${baseline}`)
+  }
+}
+
 async function waitForSocket(socketPath, child, timeoutMs = 15_000, childFailure = () => null) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -1177,6 +1188,7 @@ async function verifyPackages() {
     killSignal: 'SIGKILL',
   })
   await assertDebMaintainerScripts(debControl)
+  await assertDebRuntimeDependencies(debControl)
 
   checkpoint('checking packaged archive contents')
   const appImageRoot = path.join(appImageExtraction, 'squashfs-root')
