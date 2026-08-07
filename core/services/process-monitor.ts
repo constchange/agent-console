@@ -441,7 +441,7 @@ export class ProcessMonitor {
     this.stop()
     const configured = this.stateProvider().settings.scanIntervalMs
     const interval = this.activeClients > 0 ? configured : Math.max(configured, 30_000)
-    this.timer = setInterval(() => void this.scan(false), interval)
+    this.timer = setInterval(() => void this.scan(this.activeClients > 0), interval)
     this.timer.unref()
   }
 
@@ -467,6 +467,7 @@ export class ProcessMonitor {
     }
     this.activeClients = next
     this.restart()
+    if (next > 0) void this.scan(true).catch(() => undefined)
   }
 
   get current(): RuntimeSnapshot | null {

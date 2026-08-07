@@ -1,6 +1,6 @@
 {
   "name": "agent-console",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "A local mission control dashboard for Codex CLI, tmux, terminals, backends and workers.",
   "homepage": "https://github.com/constchange/agent-console",
   "repository": {
