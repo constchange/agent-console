@@ -11,6 +11,7 @@ import {
   Rocket,
   RotateCcw,
   ShieldCheck,
+  Smartphone,
   Trash2,
   Type,
 } from 'lucide-react'
@@ -31,6 +32,7 @@ import { installationKindLabel } from '../../shared/update-helpers'
 import { uniqueId } from '../lib/format'
 import { THEMES } from '../lib/themes'
 import { Modal } from './Modal'
+import { RemoteControlSettings } from './RemoteControlSettings'
 
 const COLORS = ['#55a6ff', '#a478ff', '#54c79b', '#f6b94b', '#ef6f7a', '#8b98a9']
 const KINDS: AgentKind[] = ['codex', 'backend', 'worker', 'python', 'node', 'docker', 'tmux', 'terminal', 'process']
@@ -322,6 +324,7 @@ export function SettingsEditor({
   onOpenReleasesPage,
 }: SettingsEditorProps) {
   const [draft, setDraft] = useState(settings)
+  const [settingsPage, setSettingsPage] = useState<'general' | 'remote'>('general')
 
   const update = (next: ConsoleSettings) => {
     setDraft(next)
@@ -337,7 +340,13 @@ export function SettingsEditor({
 
   return (
     <Modal title="Console Settings" subtitle="Make Mission Control comfortable on your screen." onClose={onClose} size="large">
-      <form className="editor-form settings-editor settings-editor--expanded" onSubmit={(event) => { event.preventDefault(); onSave(draft) }}>
+      <div className="settings-editor-shell">
+        <nav className="settings-page-tabs" aria-label="Settings pages">
+          <button type="button" className={settingsPage === 'general' ? 'is-selected' : ''} aria-current={settingsPage === 'general' ? 'page' : undefined} onClick={() => setSettingsPage('general')}><MonitorUp size={14} /> General</button>
+          <button type="button" className={settingsPage === 'remote' ? 'is-selected' : ''} aria-current={settingsPage === 'remote' ? 'page' : undefined} onClick={() => setSettingsPage('remote')}><Smartphone size={14} /> Mobile Remote</button>
+        </nav>
+        {settingsPage === 'general' ? (
+          <form className="editor-form settings-editor settings-editor--expanded" onSubmit={(event) => { event.preventDefault(); onSave(draft) }}>
         <section className="settings-section settings-section--core">
           <header className="settings-section__header">
             <span><ShieldCheck size={17} /></span>
@@ -501,8 +510,15 @@ export function SettingsEditor({
           <label className="toggle-row"><input type="checkbox" checked={draft.compactMode} onChange={(event) => setDraft({ ...draft, compactMode: event.target.checked })} /><span><strong>Compact Agent cards</strong><small>Fit more Agents on screen.</small></span></label>
         </section>
 
-        <footer className="editor-actions"><span /><div><button type="button" className="action-button" onClick={onClose}>Cancel</button><button type="submit" className="action-button action-button--primary">Save Settings</button></div></footer>
-      </form>
+            <footer className="editor-actions"><span /><div><button type="button" className="action-button" onClick={onClose}>Cancel</button><button type="submit" className="action-button action-button--primary">Save Settings</button></div></footer>
+          </form>
+        ) : (
+          <div className="settings-editor settings-editor--expanded remote-settings-page">
+            <RemoteControlSettings />
+            <footer className="editor-actions"><span /><button type="button" className="action-button" onClick={onClose}>Close</button></footer>
+          </div>
+        )}
+      </div>
     </Modal>
   )
 }

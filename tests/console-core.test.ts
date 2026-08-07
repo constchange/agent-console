@@ -9,7 +9,8 @@ import { CORE_RPC_ERROR, type CoreBootstrapResult, type CoreConfigResult } from 
 import type { ConsoleState, CoreHealth } from '../shared/types'
 
 const directories: string[] = []
-const context = { connectionId: 'test', client: { name: 'test', version: '0.4.0' } }
+const context = { connectionId: 'test', channel: 'desktop' as const, client: { name: 'test', version: '0.5.0' } }
+const gatewayContext = { connectionId: 'gateway-test', channel: 'gateway' as const, client: { name: 'gateway', version: '0.5.0' } }
 
 async function temporaryDirectory(): Promise<string> {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-console-core-integration-'))
@@ -56,6 +57,23 @@ describe('ConsoleCore migration and ownership', () => {
 
       const health = await core.handle('core.health', undefined, context) as CoreHealth
       expect(health.stateRevision).toBe(committed.stateRevision)
+      await expect(core.handle('remote.health', undefined, context)).rejects.toMatchObject({
+        code: CORE_RPC_ERROR.FORBIDDEN_CHANNEL,
+      })
+      await expect(core.handle('config.get', undefined, gatewayContext)).rejects.toMatchObject({
+        code: CORE_RPC_ERROR.FORBIDDEN_CHANNEL,
+      })
+      await expect(core.handle('remote.health', undefined, gatewayContext)).resolves.toMatchObject({
+        online: true,
+        protocolVersion: 2,
+      })
+      await expect(core.handle('remote.settings.get', undefined, context)).resolves.toMatchObject({
+        phase: 'unconfigured',
+        capabilities: { canRemoveWorkstation: false },
+      })
+      await expect(core.handle('remote.settings.get', undefined, gatewayContext)).rejects.toMatchObject({
+        code: CORE_RPC_ERROR.FORBIDDEN_CHANNEL,
+      })
     } finally {
       await core.stop()
     }
@@ -70,10 +88,12 @@ describe('ConsoleCore migration and ownership', () => {
 
   it('uses the login runtime directory and never defines a TCP endpoint', async () => {
     const paths = resolveCorePaths('/home/test/.config/agent-console', '/run/user/1000')
-    expect(paths.socketPath).toBe('/run/user/1000/agent-console/core.sock')
+    expect(paths.desktopSocketPath).toBe('/run/user/1000/agent-console/desktop/core.sock')
+    expect(paths.gatewaySocketPath).toBe('/run/user/1000/agent-console/gateway/core.sock')
     expect(Object.values(paths).some((value) => /(?:^|:)\d{2,5}$/.test(value))).toBe(false)
 
     const fallback = resolveCorePaths('/home/test/.config/agent-console', 'relative-runtime')
-    expect(fallback.socketPath).toBe('/home/test/.config/agent-console/runtime/core.sock')
+    expect(fallback.desktopSocketPath).toBe('/home/test/.config/agent-console/runtime/desktop/core.sock')
+    expect(fallback.gatewaySocketPath).toBe('/home/test/.config/agent-console/runtime/gateway/core.sock')
   })
 })

@@ -8,6 +8,16 @@ export type AgentStatus =
   | 'stopped'
   | 'offline'
 
+import type {
+  RemoteAgentPermissionInput,
+  RemoteCompletePasswordRecoveryInput,
+  RemotePairingDecisionInput,
+  RemoteRemoveWorkstationInput,
+  RemoteSettingsState,
+  RemoteSignInInput,
+  RemoteSignUpInput,
+} from './remote-settings'
+
 export type AgentKind =
   | 'codex'
   | 'terminal'
@@ -272,24 +282,6 @@ export interface CoreTaskRecord {
   active: boolean
 }
 
-/** A deliberately redacted view reserved for a future authenticated Gateway. */
-export interface RemoteAgentView {
-  id: string
-  projectId: string
-  name: string
-  emoji: string
-  color: string
-  kind: AgentKind
-  status: AgentStatus
-  updatedAt: string
-  taskId: string | null
-}
-
-export interface RemoteSafeSnapshot {
-  capturedAt: string
-  agents: RemoteAgentView[]
-}
-
 export interface AgentConsoleApi {
   getBootstrap: () => Promise<BootstrapData>
   saveState: (state: ConsoleState) => Promise<ConsoleState>
@@ -309,4 +301,23 @@ export interface AgentConsoleApi {
   getCoreHealth: () => Promise<CoreHealth>
   acknowledgeCoreState: (stateRevision: string) => Promise<void>
   onCoreConnection: (callback: (state: CoreConnectionState) => void) => () => void
+  getRemoteSettings: () => Promise<RemoteSettingsState>
+  remoteSignUp: (input: RemoteSignUpInput) => Promise<RemoteSettingsState>
+  remoteSignIn: (input: RemoteSignInInput) => Promise<RemoteSettingsState>
+  remoteSignOut: () => Promise<RemoteSettingsState>
+  remoteResendVerification: () => Promise<RemoteSettingsState>
+  remoteRequestPasswordReset: (email: string) => Promise<RemoteSettingsState>
+  remoteCompletePasswordRecovery: (input: RemoteCompletePasswordRecoveryInput) => Promise<RemoteSettingsState>
+  remoteEnable: () => Promise<RemoteSettingsState>
+  remoteDisable: () => Promise<RemoteSettingsState>
+  remoteBeginPairing: () => Promise<RemoteSettingsState>
+  remoteCancelPairing: (pairingId: string) => Promise<RemoteSettingsState>
+  remoteDecidePairing: (input: RemotePairingDecisionInput) => Promise<RemoteSettingsState>
+  remoteRevokeDevice: (deviceId: string) => Promise<RemoteSettingsState>
+  remoteRetryDeviceSync: (deviceId: string) => Promise<RemoteSettingsState>
+  remoteUpdateAgentPermission: (input: RemoteAgentPermissionInput) => Promise<RemoteSettingsState>
+  remoteRenameWorkstation: (displayName: string) => Promise<RemoteSettingsState>
+  remoteRunDoctor: () => Promise<RemoteSettingsState>
+  remoteRemoveWorkstation: (input: RemoteRemoveWorkstationInput) => Promise<RemoteSettingsState>
+  onRemoteSettings: (callback: (state: RemoteSettingsState) => void) => () => void
 }

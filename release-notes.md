@@ -1,13 +1,11 @@
-## Local Console Core
+## Mobile Remote control foundation
 
-- Added a persistent, user-level Console Core that keeps local monitoring and coarse Agent task state alive after the desktop window closes.
-- Moved configuration ownership into Core so the desktop and a future mobile Gateway can never write the same state file independently.
-- Added SHA-256 revision checks, serialized writes, a one-time pre-Core checkpoint, the existing atomic backup flow, and safe shutdown flushing.
-- Added a private Unix-socket protocol with a version handshake, strict method allowlist, 1 MiB message cap, reconnect cursors with fresh-bootstrap reset handling, request limits, and `0700`/`0600` permissions.
-- Added a local SQLite task ledger whose current automatic snapshot path stores fixed coarse summaries instead of terminal output, commands, paths, process arguments, tmux identifiers, or model reasoning.
-- Added a redacted future-Gateway projection containing only Agent identity, status, and update time. No Gateway or network listener is enabled in this release.
-- Added a read-only Local Console Core panel in Settings and a live Core connection indicator in the status bar.
-- Reduced background discovery work when no desktop client is connected and hardened persisted-PID matching against PID reuse.
-- Kept normal exits fully flushing queued saves while giving an unresponsive Core one shared 30-second shutdown deadline instead of multiplying every save timeout.
+- Added a dedicated **Settings → Mobile Remote** experience for administrator setup, sign-in/registration, email verification, enable/disable, pairing safety codes, per-phone revocation, per-Agent capabilities, workstation rename, and service Doctor results. Unconfigured service and unavailable secure storage remain visibly fail-closed; workstation removal stays unavailable until local key deletion and cloud revocation can be committed atomically.
+- Split Core IPC into private desktop and Gateway Unix sockets with protocol-v2 channel binding and disjoint method allowlists. Package acceptance proves the desktop channel cannot call `remote.*`, the Gateway channel cannot call `config.*`, and Core still opens no TCP listener.
+- Added a localhost-only Gateway server boundary, signed/redacted Remote DTO validation, replay-safe authorization infrastructure, and structured task/approval commands without exposing terminal output, commands, paths, process arguments, tmux identifiers, tokens, or model reasoning.
+- Limited Mobile write actions to structured Codex app-server tasks. Observed tmux compatibility tasks remain visible but read-only because pane input cannot be atomically bound to a foreground process.
+- Added private `remote.env` handling, a hardened Gateway user unit restricted to localhost, a separate autossh unit, exact ED25519 host-key pinning, restricted VPS tunnel-account policy, and Caddy/Nginx HTTPS 443 templates. No real host, key, or service-role credential is shipped.
+- Added `agent-console-remote validate/install/render/doctor/uninstall` and deb PATH installation. On AppImage, the first Settings enable attempt now verifies packaged inputs and atomically deploys a private CLI plus a launcher that targets the stable AppImage without copying configuration, keys, credentials, or sessions. Package acceptance launches the real Gateway role to check ARMED fail-closed behavior, exact IPv4 loopback binding, Core-dependent health, malformed signature rejection, deterministic systemd units, and shipped-resource/key-leak boundaries.
+- Retained the persistent Core, atomic configuration ownership, SQLite task ledger, AppImage/deb updates, tmux continuity, and safe `KillMode=process` behavior from v0.4.
 
-Existing Projects, Agents, themes, interface settings, state backups, tmux sessions, and running Agent processes are not deleted or replaced during the update. The Core service uses `KillMode=process`, so stopping it does not actively terminate tmux/Agent children. Supabase login, device pairing, VPS routing, public ports, and the mobile app are intentionally not included yet.
+Existing Projects, Agents, themes, interface settings, state backups, tmux sessions, and running Agent processes are preserved. Mobile Remote remains disabled until an administrator installs a private mode-`0600` configuration, deploys the reviewed VPS bundle, completes account/device setup, and explicitly enables the two user services. The mobile client and production Supabase/VPS tenancy are deployed separately; this repository contains no real endpoint or credential.

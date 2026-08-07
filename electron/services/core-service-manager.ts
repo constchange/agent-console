@@ -6,6 +6,7 @@ import { promisify } from 'node:util'
 import { app } from 'electron'
 import { renderCoreServiceUnit } from '../../core/services/core-service-unit'
 import { compareReleaseVersions } from '../../core/services/release-version'
+import { privateRemoteEnvironmentFile } from '../../core/services/remote-environment-file'
 import { matchesDetachedCoreIdentity } from './detached-core-identity'
 
 const execFileAsync = promisify(execFile)
@@ -31,7 +32,14 @@ export interface CoreServiceState {
 
 function environmentDirectory(variable: string, fallback: string): string {
   const value = process.env[variable]
-  return value && path.isAbsolute(value) ? value : fallback
+  if (!value) return fallback
+  if (!path.isAbsolute(value)
+    || path.normalize(value) !== value
+    || Buffer.byteLength(value, 'utf8') > 4_096
+    || /[\0\r\n]/.test(value)) {
+    throw new Error(`${variable} must be one normalized absolute directory.`)
+  }
+  return value
 }
 
 async function durableReplace(source: string, destination: string): Promise<void> {
@@ -98,7 +106,12 @@ export class CoreServiceManager {
 
     const configHome = environmentDirectory('XDG_CONFIG_HOME', path.join(os.homedir(), '.config'))
     const unitPath = path.join(configHome, 'systemd', 'user', SERVICE_NAME)
-    const changed = await writeIfChanged(unitPath, renderCoreServiceUnit(this.launchExecutable, this.userDataPath), 0o600)
+    const remoteEnvironmentFile = await privateRemoteEnvironmentFile(configHome)
+    const changed = await writeIfChanged(
+      unitPath,
+      renderCoreServiceUnit(this.launchExecutable, this.userDataPath, remoteEnvironmentFile),
+      0o600,
+    )
     try {
       if (changed) await execFileAsync('systemctl', ['--user', 'daemon-reload'], { timeout: 5_000 })
       await execFileAsync('systemctl', ['--user', 'enable', '--now', SERVICE_NAME], { timeout: 8_000 })
@@ -147,6 +160,22 @@ export class CoreServiceManager {
     if (this.serviceState?.mode === 'systemd-user') {
       await execFileAsync('systemctl', ['--user', 'stop', SERVICE_NAME], { timeout: 10_000 }).catch(() => undefined)
     }
+  }
+
+  async refreshRemoteEnvironment(): Promise<void> {
+    if (this.serviceState?.mode !== 'systemd-user' || !this.serviceState.unitPath) return
+    const configHome = environmentDirectory('XDG_CONFIG_HOME', path.join(os.homedir(), '.config'))
+    const remoteEnvironmentFile = await privateRemoteEnvironmentFile(configHome)
+    const changed = await writeIfChanged(
+      this.serviceState.unitPath,
+      renderCoreServiceUnit(this.launchExecutable, this.userDataPath, remoteEnvironmentFile),
+      0o600,
+    )
+    if (changed) await execFileAsync('systemctl', ['--user', 'daemon-reload'], { timeout: 5_000 })
+    // An EnvironmentFile's contents can change while the generated unit stays
+    // byte-for-byte identical. An explicit refresh must always restart Core so
+    // systemd reads the current environment values.
+    await execFileAsync('systemctl', ['--user', 'restart', SERVICE_NAME], { timeout: 10_000 })
   }
 
   private async resolveLaunchTarget(): Promise<void> {

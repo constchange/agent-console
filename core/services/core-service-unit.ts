@@ -2,7 +2,16 @@ function systemdQuote(value: string): string {
   return `"${value.replace(/%/g, '%%').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
 }
 
-export function renderCoreServiceUnit(executable: string, userDataPath: string): string {
+function systemdPath(value: string): string {
+  return value
+    .replace(/%/g, '%%')
+    .replace(/\\/g, '\\x5c')
+    .replace(/ /g, '\\x20')
+    .replace(/\t/g, '\\x09')
+    .replace(/"/g, '\\x22')
+}
+
+export function renderCoreServiceUnit(executable: string, userDataPath: string, remoteEnvironmentFile?: string | null): string {
   const args = [
     systemdQuote(executable),
     '--console-core',
@@ -15,7 +24,7 @@ Description=Agent Console local control core
 
 [Service]
 Type=simple
-ExecCondition=/usr/bin/test -x ${systemdQuote(executable)}
+${remoteEnvironmentFile ? `EnvironmentFile=-${systemdPath(remoteEnvironmentFile)}\n` : ''}ExecCondition=/usr/bin/test -x ${systemdQuote(executable)}
 ExecStart=${args}
 Restart=on-failure
 RestartSec=3

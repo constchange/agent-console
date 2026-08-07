@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { promises as fs } from 'node:fs'
 import net from 'node:net'
@@ -20,6 +21,9 @@ const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-consol
 const { renderCoreServiceUnit } = require(path.join(root, 'dist/electron/core/services/core-service-unit.js'))
 const { matchesDetachedCoreIdentity } = require(
   path.join(root, 'dist/electron/electron/services/detached-core-identity.js'),
+)
+const { CORE_PROTOCOL_VERSION, CORE_RPC_ERROR } = require(
+  path.join(root, 'dist/electron/shared/core-protocol.js'),
 )
 
 const RPC_CONNECT_TIMEOUT_MS = 5_000
@@ -52,6 +56,74 @@ function errorMessage(error) {
   return error instanceof Error ? error.message : String(error)
 }
 
+async function unusedLoopbackPort() {
+  const server = net.createServer()
+  await new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
+  const address = server.address()
+  invariant(address && typeof address === 'object', 'Could not reserve an isolated Gateway port')
+  await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+  return address.port
+}
+
+function remoteRuntimeEnvironment(port, armed = '1') {
+  return {
+    AGENT_CONSOLE_REMOTE_ARMED: armed,
+    AGENT_CONSOLE_SUPABASE_URL: 'https://package-verifier.supabase.co',
+    AGENT_CONSOLE_SUPABASE_PUBLISHABLE_KEY: `sb_publishable_${'a'.repeat(32)}`,
+    AGENT_CONSOLE_PUBLIC_BASE_URL: 'https://remote.package-verifier.invalid',
+    AGENT_CONSOLE_GATEWAY_LOCAL_HOST: '127.0.0.1',
+    AGENT_CONSOLE_GATEWAY_LOCAL_PORT: String(port),
+  }
+}
+
+async function waitForHttpStatus(url, expectedStatus, child, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs
+  let lastError = null
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(`Remote Gateway exited before ${url} returned ${expectedStatus}`)
+    }
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(1_000), redirect: 'error' })
+      if (response.status === expectedStatus) return response
+      lastError = new Error(`${url} returned ${response.status}`)
+    } catch (error) {
+      lastError = error
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  throw new Error(`${url} did not return ${expectedStatus}: ${errorMessage(lastError)}`)
+}
+
+function invalidSignedHeaders() {
+  const emptyBody = Buffer.alloc(0)
+  return {
+    authorization: 'Bearer header.payload.signature',
+    'x-ac-protocol': '1',
+    'x-ac-workstation-id': '11111111-1111-4111-8111-111111111111',
+    'x-ac-device-id': '22222222-2222-4222-8222-222222222222',
+    'x-ac-request-id': randomUUID(),
+    'x-ac-timestamp': String(Math.floor(Date.now() / 1_000)),
+    'x-ac-nonce': randomBytes(16).toString('base64url'),
+    'x-ac-body-sha256': createHash('sha256').update(emptyBody).digest('base64url'),
+    'x-ac-signature': 'A'.repeat(86),
+  }
+}
+
+async function expectRpcError(rpc, method, params, expectedCode) {
+  let failure = null
+  try {
+    await rpc.request(method, params)
+  } catch (error) {
+    failure = error
+  }
+  invariant(failure instanceof Error, `${method} unexpectedly crossed the Core channel boundary`)
+  invariant(failure.message.startsWith(`${expectedCode}:`), `${method} failed with an unexpected error: ${failure.message}`)
+}
+
 async function verifySystemdUnit(unitPath) {
   checkpoint('verifying generated systemd user unit')
   const { stdout, stderr } = await execFileAsync('systemd-analyze', ['verify', unitPath], {
@@ -79,20 +151,123 @@ async function findFile(directory, filename) {
 function assertAsarContents(archivePath, packageKind) {
   const entries = new Set(asar.listPackage(archivePath).map((entry) => entry.replace(/^\//, '')))
   for (const required of [
+    'LICENSE',
     'dist/electron/electron/main.js',
     'dist/electron/core/console-core.js',
     'dist/electron/core/services/core-service-unit.js',
+    'dist/electron/core/services/remote-service-unit.js',
     'dist/electron/core/services/instance-lock.js',
     'dist/electron/core/services/task-ledger.js',
     'dist/electron/core/transport/local-server.js',
     'dist/electron/electron/services/core-client.js',
+    'dist/electron/electron/services/remote-gateway-runtime.js',
+    'dist/electron/electron/services/remote-service-manager.js',
+    'dist/electron/gateway/core-client.js',
+    'dist/electron/gateway/http-server.js',
+    'dist/electron/shared/core-protocol.js',
+    'dist/electron/shared/remote-validation.js',
     'dist/renderer/index.html',
   ]) {
     invariant(entries.has(required), `${packageKind} is missing ${required}`)
   }
   const indexHtml = asar.extractFile(archivePath, 'dist/renderer/index.html').toString('utf8')
+  const license = asar.extractFile(archivePath, 'LICENSE').toString('utf8')
+  invariant(license.includes('MIT License') && license.includes('Agent Console contributors'),
+    `${packageKind} has an unexpected project LICENSE`)
   invariant(!indexHtml.includes('127.0.0.1:5173'), `${packageKind} kept the development server in its CSP`)
   invariant(indexHtml.includes("connect-src 'self'"), `${packageKind} has an unexpected renderer connect policy`)
+}
+
+async function assertRemoteResources(archivePath, packageKind) {
+  const remoteRoot = path.join(path.dirname(archivePath), 'remote')
+  const required = [
+    ['remote.env.example', false],
+    ['bin/agent-console-remote', true],
+    ['cli/agent-console-remote.mjs', true],
+    ['systemd/agent-console-gateway.service.tmpl', false],
+    ['systemd/agent-console-tunnel.service.tmpl', false],
+    ['vps/caddy/agent-console.caddy.tmpl', false],
+    ['vps/nginx/agent-console.conf.tmpl', false],
+    ['vps/install.sh', true],
+    ['vps/uninstall.sh', true],
+  ]
+  for (const [relative, executable] of required) {
+    const target = path.join(remoteRoot, ...relative.split('/'))
+    const stat = await fs.lstat(target).catch(() => null)
+    invariant(stat?.isFile() && !stat.isSymbolicLink(), `${packageKind} is missing safe Remote resource ${relative}`)
+    if (executable) invariant((stat.mode & 0o111) !== 0, `${packageKind} Remote resource ${relative} is not executable`)
+  }
+  const packagedFiles = []
+  async function walk(directory, prefix = '') {
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      const relative = prefix ? `${prefix}/${entry.name}` : entry.name
+      const target = path.join(directory, entry.name)
+      invariant(!entry.isSymbolicLink(), `${packageKind} Remote resources contain a link: ${relative}`)
+      if (entry.isDirectory()) await walk(target, relative)
+      else packagedFiles.push(relative)
+    }
+  }
+  await walk(remoteRoot)
+  for (const relative of packagedFiles) {
+    const base = path.basename(relative)
+    invariant(relative !== 'remote.env', `${packageKind} accidentally contains a configured remote.env`)
+    invariant(!/^id_/u.test(base) && base !== 'known_hosts' && !/\.(?:pem|key)$/iu.test(base), `${packageKind} accidentally contains SSH/TLS key material: ${relative}`)
+  }
+  const example = await fs.readFile(path.join(remoteRoot, 'remote.env.example'), 'utf8')
+  invariant(example.includes('AGENT_CONSOLE_REMOTE_ARMED=0'), `${packageKind} Remote example is not fail-closed`)
+  invariant(example.includes('REPLACE_ME'), `${packageKind} Remote example unexpectedly looks configured`)
+  const cli = path.join(remoteRoot, 'cli', 'agent-console-remote.mjs')
+  const help = await execFileAsync(process.execPath, [cli, 'help'], { timeout: 10_000, maxBuffer: 1_000_000 })
+  invariant(help.stdout.includes('validate') && help.stdout.includes('doctor'), `${packageKind} Remote CLI did not start`)
+  const [gatewayTemplate, tunnelTemplate, nginxTemplate, installer, uninstaller] = await Promise.all([
+    fs.readFile(path.join(remoteRoot, 'systemd', 'agent-console-gateway.service.tmpl'), 'utf8'),
+    fs.readFile(path.join(remoteRoot, 'systemd', 'agent-console-tunnel.service.tmpl'), 'utf8'),
+    fs.readFile(path.join(remoteRoot, 'vps', 'nginx', 'agent-console.conf.tmpl'), 'utf8'),
+    fs.readFile(path.join(remoteRoot, 'vps', 'install.sh'), 'utf8'),
+    fs.readFile(path.join(remoteRoot, 'vps', 'uninstall.sh'), 'utf8'),
+  ])
+  invariant(gatewayTemplate.includes('--disable-gpu --ozone-platform=headless --remote-gateway'), `${packageKind} Gateway template is not headless`)
+  invariant(tunnelTemplate.includes('BindReadOnlyPaths=@@REMOTE_ENV_FILE@@'), `${packageKind} Tunnel template hides remote.env from tunnel-run`)
+  invariant(tunnelTemplate.includes('BindReadOnlyPaths=@@SSH_PUBLIC_KEY_PATH@@'), `${packageKind} Tunnel template hides the SSH public key`)
+  invariant(nginxTemplate.includes('limit_req_zone $binary_remote_addr')
+    && nginxTemplate.includes('limit_conn_zone $binary_remote_addr')
+    && nginxTemplate.includes('proxy_request_buffering on;'), `${packageKind} Nginx template lacks source-IP/slow-body edge controls`)
+  invariant(nginxTemplate.includes('location ~ ^/v1/events(?:/stream)?$') && nginxTemplate.includes('proxy_read_timeout 330s'), `${packageKind} Nginx template lacks the long-lived SSE policy`)
+  invariant(installer.includes('trap finish 0') && installer.includes('snapshot_path "$caddy_main" caddy-main'), `${packageKind} VPS installer is not transactional`)
+  invariant(uninstaller.includes('trap finish 0') && uninstaller.includes('snapshot_path "$deployment_file" metadata'), `${packageKind} VPS uninstaller is not transactional`)
+  for (const script of [
+    path.join(remoteRoot, 'bin', 'agent-console-remote'),
+    path.join(remoteRoot, 'vps', 'install.sh'),
+    path.join(remoteRoot, 'vps', 'uninstall.sh'),
+  ]) await execFileAsync('sh', ['-n', script], { timeout: 10_000, maxBuffer: 1_000_000 })
+}
+
+async function verifyInstalledRemoteCommand() {
+  const resolved = await execFileAsync('/bin/sh', ['-c', 'command -v agent-console-remote'], {
+    timeout: 10_000,
+    maxBuffer: 1_000_000,
+  })
+  const commandPath = resolved.stdout.trim()
+  invariant(path.isAbsolute(commandPath), 'Installed deb did not expose agent-console-remote on PATH')
+  const commandStat = await fs.lstat(commandPath)
+  invariant(commandStat.isSymbolicLink(), 'Installed agent-console-remote command is not a package-managed link')
+  const executablePath = await fs.realpath(commandPath)
+  const executableStat = await fs.lstat(executablePath)
+  invariant(executableStat.isFile() && !executableStat.isSymbolicLink() && (executableStat.mode & 0o111) !== 0, 'Installed Remote launcher is not one executable regular file')
+  const ownership = await execFileAsync('dpkg-query', ['-S', executablePath], { timeout: 10_000, maxBuffer: 1_000_000 })
+  invariant(ownership.stdout.includes(':'), 'Installed Remote launcher is not owned by a deb package')
+  const help = await execFileAsync(commandPath, ['help'], { timeout: 15_000, maxBuffer: 1_000_000 })
+  invariant(help.stdout.includes('Remote deployment helper'), 'Installed Remote launcher could not run its packaged CLI')
+}
+
+async function assertDebMaintainerScripts(controlDirectory) {
+  const [postInstall, postRemove] = await Promise.all([
+    fs.readFile(path.join(controlDirectory, 'postinst'), 'utf8'),
+    fs.readFile(path.join(controlDirectory, 'postrm'), 'utf8'),
+  ])
+  invariant(postInstall.includes("update-alternatives --install \"$REMOTE_COMMAND\" 'agent-console-remote' \"$REMOTE_TARGET\" 100"), 'deb postinst does not register agent-console-remote')
+  invariant(postInstall.includes('Refusing to replace unrelated $REMOTE_COMMAND'), 'deb postinst can overwrite an unrelated Remote command')
+  invariant(postRemove.includes("update-alternatives --remove 'agent-console-remote' \"$REMOTE_TARGET\""), 'deb postrm does not remove the Remote alternative')
 }
 
 async function waitForSocket(socketPath, child, timeoutMs = 15_000, childFailure = () => null) {
@@ -238,6 +413,10 @@ async function listeningTcpSocketsOwnedBy(pid) {
   return owned
 }
 
+function ipv4LoopbackEndpoint(port) {
+  return `0100007F:${port.toString(16).toUpperCase().padStart(4, '0')}`
+}
+
 function processStartTime(rawStat) {
   const commandEnd = rawStat.lastIndexOf(')')
   if (commandEnd < 0) return null
@@ -329,6 +508,22 @@ async function waitForExit(identity, label, timeoutMs = 10_000) {
     throw new Error(`${label} process ${identity.pid} identity could not be verified after ${timeoutMs} ms`)
   }
   return finalStatus === 'gone'
+}
+
+async function waitForChildExit(child, timeoutMs = 10_000) {
+  if (child.exitCode !== null || child.signalCode !== null) return true
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      child.off('exit', onExit)
+      resolve(false)
+    }, timeoutMs)
+    timer.unref()
+    const onExit = () => {
+      clearTimeout(timer)
+      resolve(true)
+    }
+    child.once('exit', onExit)
+  })
 }
 
 async function seedLegacyState(userData) {
@@ -590,10 +785,17 @@ async function verifyCoreExecutable(executable, label, fixtureName, extraEnviron
   const fixtureRoot = path.join(temporaryDirectory, fixtureName)
   const userData = path.join(fixtureRoot, 'user-data')
   const runtimeRoot = path.join(fixtureRoot, 'runtime')
+  const gatewayPort = await unusedLoopbackPort()
+  const disarmedGatewayPort = await unusedLoopbackPort()
   await seedLegacyState(userData)
   await fs.mkdir(runtimeRoot, { recursive: true, mode: 0o700 })
 
-  const coreEnvironment = { ...process.env, ...extraEnvironment, XDG_RUNTIME_DIR: runtimeRoot }
+  const coreEnvironment = {
+    ...process.env,
+    ...extraEnvironment,
+    ...remoteRuntimeEnvironment(gatewayPort),
+    XDG_RUNTIME_DIR: runtimeRoot,
+  }
   delete coreEnvironment.DISPLAY
   delete coreEnvironment.WAYLAND_DISPLAY
   const child = spawn(executable, [
@@ -616,6 +818,11 @@ async function verifyCoreExecutable(executable, label, fixtureName, extraEnviron
   let coreIdentity = null
   let coreLockAnchor = null
   let rpc = null
+  let gatewayRpc = null
+  let gatewayChild = null
+  let gatewayIdentity = null
+  let disarmedGatewayChild = null
+  let disarmedGatewayIdentity = null
   let primaryFailure = null
   try {
     childIdentity = await captureProcessIdentity(child.pid)
@@ -625,18 +832,35 @@ async function verifyCoreExecutable(executable, label, fixtureName, extraEnviron
         ? `${label} wrapper failed to launch: ${errorMessage(childFailure)}`
         : `${label} wrapper process identity could not be captured after launch`,
     )
-    const socketPath = path.join(runtimeRoot, 'agent-console', 'core.sock')
-    checkpoint(`${label}: waiting for Core socket`)
-    await waitForSocket(socketPath, child, 15_000, () => childFailure)
-    rpc = createRpcClient(socketPath)
+    const desktopSocketPath = path.join(runtimeRoot, 'agent-console', 'desktop', 'core.sock')
+    const gatewaySocketPath = path.join(runtimeRoot, 'agent-console', 'gateway', 'core.sock')
+    checkpoint(`${label}: waiting for desktop and Gateway Core sockets`)
+    await waitForSocket(desktopSocketPath, child, 15_000, () => childFailure)
+    await waitForSocket(gatewaySocketPath, child, 15_000, () => childFailure)
+    rpc = createRpcClient(desktopSocketPath)
     await rpc.connected
     await rpc.request('initialize', {
-      protocolVersion: 1,
+      protocolVersion: CORE_PROTOCOL_VERSION,
+      expectedChannel: 'desktop',
       client: { name: `package-verifier-${fixtureName}`, version: packageJson.version },
     })
     await rpc.request('events.subscribe', { afterSeq: 0 })
     const health = await rpc.request('core.health')
     const bootstrap = await rpc.request('core.bootstrap')
+    await expectRpcError(rpc, 'remote.health', undefined, CORE_RPC_ERROR.METHOD_NOT_FOUND)
+    gatewayRpc = createRpcClient(gatewaySocketPath)
+    await gatewayRpc.connected
+    const gatewayInitialize = await gatewayRpc.request('initialize', {
+      protocolVersion: CORE_PROTOCOL_VERSION,
+      expectedChannel: 'gateway',
+      client: { name: `package-gateway-verifier-${fixtureName}`, version: packageJson.version },
+    })
+    invariant(gatewayInitialize.channel === 'gateway', `${label} Gateway initialized on the wrong channel`)
+    invariant(gatewayInitialize.capabilities?.events === false, `${label} Gateway unexpectedly advertised raw Core events`)
+    await expectRpcError(gatewayRpc, 'events.subscribe', { afterSeq: 0 }, CORE_RPC_ERROR.METHOD_NOT_FOUND)
+    const remoteHealth = await gatewayRpc.request('remote.health')
+    invariant(remoteHealth.online === true, `${label} Gateway health is not online`)
+    await expectRpcError(gatewayRpc, 'config.get', undefined, CORE_RPC_ERROR.METHOD_NOT_FOUND)
     const verifiedCore = await verifiedCoreIdentityFromLock(userData, health.pid)
     invariant(verifiedCore, `${label} Core lock did not identify its reported process`)
     coreIdentity = verifiedCore.identity
@@ -646,20 +870,123 @@ async function verifyCoreExecutable(executable, label, fixtureName, extraEnviron
     invariant(bootstrap.state.projects[0].name === 'Existing Project', `${label} Core did not preserve the existing state`)
     invariant(bootstrap.state.settings.theme === 'forest-studio', `${label} Core did not preserve the existing theme`)
     invariant((await listeningTcpSocketsOwnedBy(coreIdentity.pid)).length === 0, `${label} Core opened a listening TCP socket`)
+
+    const gatewayHome = path.join(fixtureRoot, 'gateway-home')
+    const gatewayConfig = path.join(fixtureRoot, 'gateway-config')
+    const gatewayCache = path.join(fixtureRoot, 'gateway-cache')
+    await Promise.all([
+      fs.mkdir(gatewayHome, { recursive: true, mode: 0o700 }),
+      fs.mkdir(gatewayConfig, { recursive: true, mode: 0o700 }),
+      fs.mkdir(gatewayCache, { recursive: true, mode: 0o700 }),
+    ])
+    checkpoint(`${label}: starting the real packaged localhost Gateway role`)
+    gatewayChild = spawn(executable, [
+      '--remote-gateway',
+      `--remote-gateway-socket=${gatewaySocketPath}`,
+      '--no-sandbox',
+      '--disable-gpu',
+      '--ozone-platform=headless',
+    ], {
+      env: {
+        ...coreEnvironment,
+        ...remoteRuntimeEnvironment(gatewayPort),
+        HOME: gatewayHome,
+        XDG_CONFIG_HOME: gatewayConfig,
+        XDG_CACHE_HOME: gatewayCache,
+      },
+      stdio: 'ignore',
+    })
+    gatewayIdentity = await captureProcessIdentity(gatewayChild.pid)
+    invariant(gatewayIdentity, `${label} packaged Gateway process identity could not be captured`)
+    const gatewayHealthUrl = `http://127.0.0.1:${gatewayPort}/healthz`
+    const healthy = await waitForHttpStatus(gatewayHealthUrl, 200, gatewayChild)
+    invariant((await healthy.json()).ok === true, `${label} packaged Gateway returned an invalid health body`)
+    const gatewayListeners = await listeningTcpSocketsOwnedBy(gatewayIdentity.pid)
+    invariant(
+      gatewayListeners.length === 1 && gatewayListeners[0] === ipv4LoopbackEndpoint(gatewayPort),
+      `${label} packaged Gateway listeners were not exactly IPv4 loopback: ${gatewayListeners.join(', ')}`,
+    )
+    const denied = await fetch(`http://127.0.0.1:${gatewayPort}/v1/dashboard`, {
+      headers: invalidSignedHeaders(),
+      redirect: 'error',
+      signal: AbortSignal.timeout(5_000),
+    })
+    const deniedBody = await denied.json()
+    invariant(
+      denied.status === 403 && deniedBody?.error?.code === 'REMOTE_DISABLED',
+      `${label} packaged Gateway did not fail an unauthenticated signed candidate safely`,
+    )
+    const malformedSignature = await fetch(`http://127.0.0.1:${gatewayPort}/v1/dashboard`, {
+      headers: { ...invalidSignedHeaders(), 'x-ac-signature': 'not-base64url!' },
+      redirect: 'error',
+      signal: AbortSignal.timeout(5_000),
+    })
+    const malformedSignatureBody = await malformedSignature.json()
+    invariant(
+      malformedSignature.status === 400 && malformedSignatureBody?.error?.code === 'INVALID_HEADERS',
+      `${label} packaged Gateway did not reject malformed signature metadata at its HTTP boundary`,
+    )
+
+    const disarmedHome = path.join(fixtureRoot, 'disarmed-gateway-home')
+    const disarmedConfig = path.join(fixtureRoot, 'disarmed-gateway-config')
+    const disarmedCache = path.join(fixtureRoot, 'disarmed-gateway-cache')
+    await Promise.all([
+      fs.mkdir(disarmedHome, { recursive: true, mode: 0o700 }),
+      fs.mkdir(disarmedConfig, { recursive: true, mode: 0o700 }),
+      fs.mkdir(disarmedCache, { recursive: true, mode: 0o700 }),
+    ])
+    disarmedGatewayChild = spawn(executable, [
+      '--remote-gateway',
+      `--remote-gateway-socket=${gatewaySocketPath}`,
+      '--no-sandbox',
+      '--disable-gpu',
+      '--ozone-platform=headless',
+    ], {
+      env: {
+        ...coreEnvironment,
+        ...remoteRuntimeEnvironment(disarmedGatewayPort, '0'),
+        HOME: disarmedHome,
+        XDG_CONFIG_HOME: disarmedConfig,
+        XDG_CACHE_HOME: disarmedCache,
+      },
+      stdio: 'ignore',
+    })
+    disarmedGatewayIdentity = await captureProcessIdentity(disarmedGatewayChild.pid)
+    const disarmedExited = await waitForChildExit(disarmedGatewayChild, 10_000)
+    invariant(disarmedExited, `${label} disarmed packaged Gateway did not exit`)
+    invariant(disarmedGatewayChild.exitCode !== 0, `${label} disarmed packaged Gateway exited successfully`)
+    let disarmedListening = false
+    try {
+      await fetch(`http://127.0.0.1:${disarmedGatewayPort}/healthz`, { signal: AbortSignal.timeout(500) })
+      disarmedListening = true
+    } catch {
+      // Expected: ARMED=0 must fail before creating a listener.
+    }
+    invariant(!disarmedListening, `${label} disarmed packaged Gateway opened an HTTP listener`)
+
     await rpc.request('core.flush', undefined, RPC_FLUSH_TIMEOUT_MS)
-    checkpoint(`${label}: runtime and persistence checks passed`)
+    await stopProcess(coreIdentity, `${label} Core`, 10_000)
+    const unhealthy = await waitForHttpStatus(gatewayHealthUrl, 503, gatewayChild)
+    invariant((await unhealthy.json()).ok === false, `${label} Gateway stayed healthy after Core stopped`)
+    checkpoint(`${label}: runtime, Gateway, and persistence checks passed`)
   } catch (error) {
     primaryFailure = new Error(`${label}: ${errorMessage(error)}\n${diagnostics}`, { cause: error })
   }
   rpc?.destroy()
+  gatewayRpc?.destroy()
   let cleanupFailure = null
   try {
     await cleanupFixtureProcesses(label, child, childIdentity, userData, coreLockAnchor, [
       { identity: childIdentity, label: `${label} wrapper`, gracefulTimeoutMs: 10_000 },
       { identity: coreIdentity, label: `${label} Core`, gracefulTimeoutMs: 10_000 },
+      { identity: gatewayIdentity, label: `${label} Remote Gateway`, gracefulTimeoutMs: 10_000 },
+      { identity: disarmedGatewayIdentity, label: `${label} disarmed Remote Gateway`, gracefulTimeoutMs: 3_000 },
     ])
   } catch (error) {
     cleanupFailure = error
+  } finally {
+    gatewayChild?.unref()
+    disarmedGatewayChild?.unref()
   }
   throwVerificationFailures(label, primaryFailure, cleanupFailure)
 
@@ -709,6 +1036,7 @@ async function verifyDesktopAndPersistentCore() {
   let coreIdentity = null
   let coreLockAnchor = null
   let rpc = null
+  let gatewayRpc = null
   let primaryFailure = null
   try {
     desktopIdentity = await captureProcessIdentity(desktop.pid)
@@ -718,18 +1046,34 @@ async function verifyDesktopAndPersistentCore() {
         ? `AppImage desktop failed to launch: ${errorMessage(desktopFailure)}`
         : 'AppImage desktop process identity could not be captured after launch',
     )
-    const socketPath = path.join(runtimeRoot, 'agent-console', 'core.sock')
-    checkpoint('AppImage desktop: waiting for persistent Core socket')
-    await waitForSocket(socketPath, desktop, 30_000, () => desktopFailure)
-    rpc = createRpcClient(socketPath)
+    const desktopSocketPath = path.join(runtimeRoot, 'agent-console', 'desktop', 'core.sock')
+    const gatewaySocketPath = path.join(runtimeRoot, 'agent-console', 'gateway', 'core.sock')
+    checkpoint('AppImage desktop: waiting for persistent desktop and Gateway Core sockets')
+    await waitForSocket(desktopSocketPath, desktop, 30_000, () => desktopFailure)
+    await waitForSocket(gatewaySocketPath, desktop, 30_000, () => desktopFailure)
+    rpc = createRpcClient(desktopSocketPath)
     await rpc.connected
     await rpc.request('initialize', {
-      protocolVersion: 1,
+      protocolVersion: CORE_PROTOCOL_VERSION,
+      expectedChannel: 'desktop',
       client: { name: 'desktop-lifecycle-verifier', version: packageJson.version },
     })
     await rpc.request('events.subscribe', { afterSeq: 0 })
     const health = await rpc.request('core.health')
     const bootstrap = await rpc.request('core.bootstrap')
+    await expectRpcError(rpc, 'remote.health', undefined, CORE_RPC_ERROR.METHOD_NOT_FOUND)
+    gatewayRpc = createRpcClient(gatewaySocketPath)
+    await gatewayRpc.connected
+    const gatewayInitialize = await gatewayRpc.request('initialize', {
+      protocolVersion: CORE_PROTOCOL_VERSION,
+      expectedChannel: 'gateway',
+      client: { name: 'gateway-lifecycle-verifier', version: packageJson.version },
+    })
+    invariant(gatewayInitialize.capabilities?.events === false, 'AppImage Gateway unexpectedly advertised raw Core events')
+    await expectRpcError(gatewayRpc, 'events.subscribe', { afterSeq: 0 }, CORE_RPC_ERROR.METHOD_NOT_FOUND)
+    const remoteHealth = await gatewayRpc.request('remote.health')
+    invariant(remoteHealth.online === true, 'AppImage Gateway health is not online')
+    await expectRpcError(gatewayRpc, 'config.get', undefined, CORE_RPC_ERROR.METHOD_NOT_FOUND)
     const verifiedCore = await verifiedCoreIdentityFromLock(userData, health.pid)
     invariant(verifiedCore, 'AppImage persistent Core lock did not identify its reported process')
     coreIdentity = verifiedCore.identity
@@ -750,11 +1094,13 @@ async function verifyDesktopAndPersistentCore() {
     invariant(await matchesProcessIdentity(coreIdentity), 'Persistent Core exited when the AppImage desktop closed')
     const afterDesktopClose = await rpc.request('core.health')
     invariant(afterDesktopClose.pid === coreIdentity.pid, 'Core did not remain available after the desktop closed')
+    invariant((await gatewayRpc.request('remote.health')).online === true, 'Gateway socket did not survive desktop shutdown')
     checkpoint('AppImage desktop: persistent Core survived desktop shutdown')
   } catch (error) {
     primaryFailure = new Error(`AppImage desktop/Core lifecycle: ${errorMessage(error)}\n${diagnostics}`, { cause: error })
   }
   rpc?.destroy()
+  gatewayRpc?.destroy()
   let cleanupFailure = null
   try {
     await cleanupFixtureProcesses(
@@ -782,8 +1128,10 @@ async function verifyPackages() {
 
   const appImageExtraction = path.join(temporaryDirectory, 'appimage')
   const debExtraction = path.join(temporaryDirectory, 'deb')
+  const debControl = path.join(temporaryDirectory, 'deb-control')
   await fs.mkdir(appImageExtraction)
   await fs.mkdir(debExtraction)
+  await fs.mkdir(debControl)
   checkpoint('extracting AppImage')
   await execFileAsync(appImage, ['--appimage-extract'], {
     cwd: appImageExtraction,
@@ -797,6 +1145,12 @@ async function verifyPackages() {
     timeout: 60_000,
     killSignal: 'SIGKILL',
   })
+  await execFileAsync('dpkg-deb', ['--control', deb, debControl], {
+    maxBuffer: 4_000_000,
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
+  })
+  await assertDebMaintainerScripts(debControl)
 
   checkpoint('checking packaged archive contents')
   const appImageRoot = path.join(appImageExtraction, 'squashfs-root')
@@ -806,6 +1160,8 @@ async function verifyPackages() {
   invariant(debAsar, 'deb does not contain app.asar')
   assertAsarContents(appImageAsar, 'AppImage')
   assertAsarContents(debAsar, 'deb')
+  await assertRemoteResources(appImageAsar, 'AppImage')
+  await assertRemoteResources(debAsar, 'deb')
   checkpoint('packaged archive contents passed verification')
 
   const appRun = path.join(appImageRoot, 'AppRun')
@@ -813,12 +1169,14 @@ async function verifyPackages() {
   await verifyDesktopAndPersistentCore()
   if (installedExecutable) {
     await fs.access(installedExecutable)
+    await verifyInstalledRemoteCommand()
     await verifyCoreExecutable(installedExecutable, 'installed deb', 'installed-deb-core')
   }
 
   console.log(
     `Verified Agent Console v${packageJson.version}: AppImage desktop/Core persistence, stable copy, systemd unit syntax, `
-      + `${installedExecutable ? 'installed deb runtime, ' : 'deb contents, '}legacy-state preservation, Unix IPC, and zero TCP listeners.`,
+      + `${installedExecutable ? 'installed deb runtime, ' : 'deb contents, '}Remote deployment resources, legacy-state preservation, `
+      + 'Unix IPC, a real loopback-only ARMED Gateway with fail-closed health and malformed-signature checks, and zero Core TCP listeners.',
   )
 }
 

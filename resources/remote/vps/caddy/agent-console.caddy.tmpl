@@ -1,0 +1,26 @@
+@@REMOTE_DOMAIN@@ {
+    encode zstd gzip
+
+    @remote_api path /v1/* /healthz
+    reverse_proxy @remote_api 127.0.0.1:@@VPS_GATEWAY_PORT@@ {
+        flush_interval -1
+        transport http {
+            dial_timeout 5s
+            response_header_timeout 65s
+        }
+    }
+
+    respond 404
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+        -Server
+    }
+
+    log {
+        output file /var/log/caddy/agent-console-access.log
+        format json
+    }
+}

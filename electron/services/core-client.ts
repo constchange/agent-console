@@ -5,6 +5,8 @@ import {
   CORE_PROTOCOL_VERSION,
   CORE_RPC_ERROR,
   isCoreHandlerMethod,
+  isMethodAllowedForChannel,
+  type CoreChannel,
   type CoreEvent,
   type CoreEventSubscriptionResult,
   type CoreHandlerMethod,
@@ -22,6 +24,7 @@ interface PendingRequest {
 
 export interface CoreClientOptions {
   socketPath: string
+  channel: CoreChannel
   clientVersion: string
   clientName?: string
   protocolVersion?: number
@@ -81,10 +84,11 @@ export class CoreClient {
 
   constructor(options: CoreClientOptions) {
     if (!options.socketPath) throw new Error('A Core socket path is required.')
+    if (options.channel !== 'desktop' && options.channel !== 'gateway') throw new Error('A Core channel is required.')
     if (!options.clientVersion.trim()) throw new Error('A Core client version is required.')
     this.options = {
       ...options,
-      clientName: options.clientName?.trim() || 'agent-console-desktop',
+      clientName: options.clientName?.trim() || `agent-console-${options.channel}`,
       protocolVersion: options.protocolVersion ?? CORE_PROTOCOL_VERSION,
       requestTimeoutMs: Math.max(1, options.requestTimeoutMs ?? 5_000),
     }
@@ -117,6 +121,7 @@ export class CoreClient {
       return {
         protocolVersion: this.options.protocolVersion,
         instanceId: this.serverInstanceId ?? 'connected',
+        channel: this.options.channel,
         server: { name: 'agent-console-core', version: 'connected' },
         capabilities: { events: true },
         currentEventSeq: this.lastEventSeq,
@@ -132,6 +137,12 @@ export class CoreClient {
   async request<T = unknown>(method: CoreHandlerMethod, params?: unknown, timeoutMs?: number): Promise<T> {
     if (!isCoreHandlerMethod(method)) {
       throw new CoreRemoteError(CORE_RPC_ERROR.METHOD_NOT_FOUND, `Unknown Core method: ${String(method)}`)
+    }
+    if (!isMethodAllowedForChannel(method, this.options.channel)) {
+      throw new CoreRemoteError(
+        CORE_RPC_ERROR.FORBIDDEN_CHANNEL,
+        `Method ${method} is not available on the ${this.options.channel} Core channel.`,
+      )
     }
     if (!this.connected) throw new CoreClientDisconnectedError('Connect to Core before sending a request.')
     return this.sendRequest(method, params, timeoutMs) as Promise<T>
@@ -175,6 +186,7 @@ export class CoreClient {
       })
       const initialized = await this.sendRequest('initialize', {
         protocolVersion: this.options.protocolVersion,
+        expectedChannel: this.options.channel,
         client: {
           name: this.options.clientName,
           version: this.options.clientVersion,
@@ -186,14 +198,24 @@ export class CoreClient {
           `Core selected unexpected protocol version ${initialized.protocolVersion}.`,
         )
       }
+      if (initialized.channel !== this.options.channel) {
+        throw new CoreRemoteError(
+          CORE_RPC_ERROR.FORBIDDEN_CHANNEL,
+          `Connected to the ${initialized.channel} Core channel instead of ${this.options.channel}.`,
+        )
+      }
       if (typeof initialized.instanceId !== 'string' || !/^[a-f0-9-]{16,64}$/i.test(initialized.instanceId)) {
         throw new CoreRemoteError(CORE_RPC_ERROR.INVALID_REQUEST, 'Core returned an invalid server instance identifier.')
       }
       if (this.serverInstanceId && this.serverInstanceId !== initialized.instanceId) this.lastEventSeq = 0
       this.serverInstanceId = initialized.instanceId
       this.initialized = true
-      this.subscription = await this.sendRequest('events.subscribe', { afterSeq: this.lastEventSeq }) as CoreEventSubscriptionResult
-      if (this.subscription.resetRequired) this.lastEventSeq = this.subscription.currentSeq
+      if (initialized.capabilities.events) {
+        this.subscription = await this.sendRequest('events.subscribe', { afterSeq: this.lastEventSeq }) as CoreEventSubscriptionResult
+        if (this.subscription.resetRequired) this.lastEventSeq = this.subscription.currentSeq
+      } else {
+        this.subscription = null
+      }
       this.emitConnection(true)
       return initialized
     } catch (error) {

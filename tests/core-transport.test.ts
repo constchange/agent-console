@@ -18,6 +18,7 @@ import {
   CORE_RPC_ERROR,
   CoreRpcException,
   type CoreEvent,
+  type CoreChannel,
   type CoreHandlerMethod,
   type CoreRequestHandler,
 } from '../shared/core-protocol'
@@ -62,14 +63,20 @@ function supportsUnixSockets(): Promise<boolean> {
 async function fixture(
   handler: CoreRequestHandler = () => ({ ok: true }),
   allowedMethods: readonly CoreHandlerMethod[] = ['core.health'],
+  channel: CoreChannel = 'desktop',
+  initialEventSeq = 0,
+  eventsEnabled = true,
 ): Promise<Fixture> {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-console-core-'))
   const socketPath = path.join(directory, 'runtime', 'agent-console', 'core.sock')
   const server = new LocalCoreServer({
     socketPath,
+    channel,
     serverVersion: 'test',
     handler,
     allowedMethods,
+    eventsEnabled,
+    initialEventSeq,
     maxEventHistory: 10,
   })
   const value = { directory, socketPath, server }
@@ -78,9 +85,13 @@ async function fixture(
   return value
 }
 
-function client(socketPath: string, options: { protocolVersion?: number; requestTimeoutMs?: number } = {}): CoreClient {
+function client(
+  socketPath: string,
+  options: { protocolVersion?: number; requestTimeoutMs?: number; channel?: CoreChannel } = {},
+): CoreClient {
   const value = new CoreClient({
     socketPath,
+    channel: options.channel ?? 'desktop',
     clientVersion: 'test',
     protocolVersion: options.protocolVersion,
     requestTimeoutMs: options.requestTimeoutMs,
@@ -135,6 +146,70 @@ describe('Unix-only Core transport', () => {
     })
   })
 
+  it('binds the channel on the server and refuses cross-channel allowlists and clients', async ({ skip }) => {
+    if (!await supportsUnixSockets()) skip('Unix sockets are blocked by this execution sandbox.')
+    expect(() => new LocalCoreServer({
+      socketPath: path.join(os.tmpdir(), 'invalid-gateway.sock'),
+      channel: 'gateway',
+      serverVersion: 'test',
+      handler: () => ({ ok: true }),
+      allowedMethods: ['config.get'],
+      eventsEnabled: true,
+    })).toThrow('another channel')
+
+    const { socketPath } = await fixture(() => ({ online: true }), ['remote.health'], 'gateway')
+    const wrongChannel = client(socketPath, { channel: 'desktop' })
+    await expect(wrongChannel.connect()).rejects.toMatchObject({ code: CORE_RPC_ERROR.FORBIDDEN_CHANNEL })
+    const gateway = client(socketPath, { channel: 'gateway' })
+    await gateway.connect()
+    await expect(gateway.request('remote.health')).resolves.toEqual({ online: true })
+    await expect(gateway.request('config.get')).rejects.toMatchObject({ code: CORE_RPC_ERROR.FORBIDDEN_CHANNEL })
+  })
+
+  it('disables builtin socket events for Gateway so streams can only use the authenticated bridge', async ({ skip }) => {
+    if (!await supportsUnixSockets()) skip('Unix sockets are blocked by this execution sandbox.')
+    const { socketPath } = await fixture(
+      () => ({ online: true }),
+      ['remote.health'],
+      'gateway',
+      0,
+      false,
+    )
+    const gateway = client(socketPath, { channel: 'gateway' })
+    await gateway.connect()
+    expect(gateway.subscriptionState).toBeNull()
+    await expect(gateway.request('events.subscribe' as never, { afterSeq: 0 })).rejects.toMatchObject({
+      code: CORE_RPC_ERROR.METHOD_NOT_FOUND,
+    })
+  })
+
+  it('does not let rejected Gateway bridge candidates poison later health or valid bridge calls', async ({ skip }) => {
+    if (!await supportsUnixSockets()) skip('Unix sockets are blocked by this execution sandbox.')
+    const handler: CoreRequestHandler = (method, params) => method === 'remote.health'
+      ? { online: true }
+      : method === 'remote.stream.poll'
+        ? { closed: false, currentSeq: 42, events: [] }
+        : params && typeof params === 'object' && 'authenticated' in params
+          ? { status: 200, body: { ok: true } }
+          : { status: 403, body: { error: { code: 'REMOTE_AUTHORIZATION_DENIED' } } }
+    const { socketPath } = await fixture(
+      handler,
+      ['remote.health', 'remote.request', 'remote.stream.poll'],
+      'gateway',
+      0,
+      false,
+    )
+    const gateway = client(socketPath, { channel: 'gateway' })
+    await gateway.connect()
+    for (let index = 0; index < 550; index += 1) {
+      await expect(gateway.request('remote.request', { candidate: index })).resolves.toMatchObject({ status: 403 })
+    }
+    await expect(gateway.request('remote.health')).resolves.toEqual({ online: true })
+    await expect(gateway.request('remote.stream.poll', { streamId: 'existing' }))
+      .resolves.toMatchObject({ closed: false, currentSeq: 42 })
+    await expect(gateway.request('remote.request', { authenticated: true })).resolves.toMatchObject({ status: 200 })
+  })
+
   it('handles requests and replays sequenced events after an explicit reconnect', async ({ skip }) => {
     if (!await supportsUnixSockets()) skip('Unix sockets are blocked by this execution sandbox.')
     const handler: CoreRequestHandler = (method, params, context) => ({ method, params, client: context.client.name })
@@ -176,9 +251,11 @@ describe('Unix-only Core transport', () => {
     await first.server.close()
     const secondServer = new LocalCoreServer({
       socketPath: first.socketPath,
+      channel: 'desktop',
       serverVersion: 'test-restarted',
       handler: () => ({ ok: true }),
       allowedMethods: ['core.health'],
+      eventsEnabled: true,
     })
     fixtures.push({ directory: first.directory, socketPath: first.socketPath, server: secondServer })
     await secondServer.start()

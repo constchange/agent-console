@@ -1,17 +1,33 @@
 import path from 'node:path'
+import os from 'node:os'
 import { chmodSync, lstatSync, mkdirSync } from 'node:fs'
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
-import { ConsoleCore } from '../core/console-core'
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  Menu,
+  safeStorage,
+  shell,
+  type IpcMainInvokeEvent,
+} from 'electron'
+import { ConsoleCore, type ConsoleCoreOptions } from '../core/console-core'
+import { createDefaultCoreTaskRuntimeDependencies } from '../core/adapters/core-task-runtime'
 import { resolveCorePaths } from '../core/paths'
 import { CoreInstanceLock } from '../core/services/instance-lock'
+import { privateRemoteEnvironmentFile } from '../core/services/remote-environment-file'
 import { LocalCoreServer } from '../core/transport/local-server'
 import {
   CORE_PROTOCOL_VERSION,
+  DESKTOP_CORE_METHODS,
+  GATEWAY_CORE_METHODS,
   type CoreBootstrapResult,
   type CoreConfigResult,
   type CorePreparedAgent,
   type CorePreparedProject,
+  type CoreHandlerMethod,
 } from '../shared/core-protocol'
+import type { RemoteSettingsState } from '../shared/remote-settings'
 import type {
   ActionResult,
   ConsoleState,
@@ -20,15 +36,25 @@ import type {
   RuntimeSnapshot,
 } from '../shared/types'
 import { CoreClient } from './services/core-client'
-import { CoreServiceManager } from './services/core-service-manager'
+import { CoreServiceManager, type CoreServiceState } from './services/core-service-manager'
 import { drainForShutdown } from './services/shutdown-drain'
+import { authCallbackFromArguments, validateAuthCallbackUrl } from './services/auth-callback'
+import { RemoteDesktopController } from './services/remote-desktop-controller'
+import { startRemoteGatewayRuntime, type RemoteGatewayRuntime } from './services/remote-gateway-runtime'
+import { assertRemoteIpcInvocation } from './services/remote-ipc-policy'
+import { readRemoteServicePrivatePaths } from './services/remote-service-config'
+import { RemoteServiceManager } from './services/remote-service-manager'
 import { TerminalManager, windowTitle } from './services/terminal-manager'
 import { UpdateManager } from './services/update-manager'
 
 const CORE_MODE_ARGUMENT = '--console-core'
 const CORE_USER_DATA_ARGUMENT = '--console-core-user-data='
+const REMOTE_GATEWAY_MODE_ARGUMENT = '--remote-gateway'
 const DESKTOP_SHUTDOWN_DEADLINE_MS = 30_000
 const coreMode = process.argv.includes(CORE_MODE_ARGUMENT)
+const remoteGatewayMode = process.argv.includes(REMOTE_GATEWAY_MODE_ARGUMENT)
+if (coreMode && remoteGatewayMode) throw new Error('Console Core and Remote Gateway roles are mutually exclusive.')
+const headlessMode = coreMode || remoteGatewayMode
 const configuredCoreUserData = process.argv
   .find((value) => value.startsWith(CORE_USER_DATA_ARGUMENT))
   ?.slice(CORE_USER_DATA_ARGUMENT.length)
@@ -37,19 +63,22 @@ const coreStateDataPath = configuredCoreUserData
   ? path.resolve(configuredCoreUserData)
   : app.getPath('userData')
 
-if (coreMode) {
+if (headlessMode) {
   process.umask(0o077)
-  const coreElectronProfilePath = path.join(coreStateDataPath, 'electron-core-profile')
-  mkdirSync(coreElectronProfilePath, { recursive: true, mode: 0o700 })
-  const profileStat = lstatSync(coreElectronProfilePath)
+  app.commandLine.appendSwitch('disable-gpu')
+  app.commandLine.appendSwitch('ozone-platform', 'headless')
+  const profileParent = coreMode ? coreStateDataPath : app.getPath('userData')
+  const roleProfilePath = path.join(profileParent, coreMode ? 'electron-core-profile' : 'electron-gateway-profile')
+  mkdirSync(roleProfilePath, { recursive: true, mode: 0o700 })
+  const profileStat = lstatSync(roleProfilePath)
   if (!profileStat.isDirectory() || profileStat.isSymbolicLink()) {
-    throw new Error(`Console Core profile must be a real directory: ${coreElectronProfilePath}`)
+    throw new Error(`Headless Electron profile must be a real directory: ${roleProfilePath}`)
   }
   if (typeof process.getuid === 'function' && profileStat.uid !== process.getuid()) {
-    throw new Error(`Console Core profile is not owned by the current user: ${coreElectronProfilePath}`)
+    throw new Error(`Headless Electron profile is not owned by the current user: ${roleProfilePath}`)
   }
-  chmodSync(coreElectronProfilePath, 0o700)
-  app.setPath('userData', coreElectronProfilePath)
+  chmodSync(roleProfilePath, 0o700)
+  app.setPath('userData', roleProfilePath)
 }
 
 let mainWindow: BrowserWindow | null = null
@@ -75,10 +104,15 @@ let installingUpdate = false
 let reconnectTimer: NodeJS.Timeout | null = null
 let reconnectAttempt: Promise<CoreBootstrapResult> | null = null
 let desktopStarted = false
+let remoteDesktop: RemoteDesktopController | null = null
+let remoteGatewayRuntime: RemoteGatewayRuntime | null = null
+let authCallbackDrain: Promise<void> | null = null
+const pendingAuthCallbacks: string[] = []
 
 let coreRuntime: {
   core: ConsoleCore
-  server: LocalCoreServer
+  desktopServer: LocalCoreServer
+  gatewayServer: LocalCoreServer
   lock: CoreInstanceLock
 } | null = null
 
@@ -102,18 +136,100 @@ function createWindow(): BrowserWindow {
 
   window.once('ready-to-show', () => window.show())
   window.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('https://')) void shell.openExternal(url)
+    try {
+      const target = new URL(url)
+      if (target.protocol === 'https:' && !target.username && !target.password) void shell.openExternal(target.toString())
+    } catch {
+      // Invalid or non-HTTPS targets stay denied.
+    }
     return { action: 'deny' }
   })
   window.webContents.on('will-navigate', (event, url) => {
     const developmentUrl = process.env.VITE_DEV_SERVER_URL
-    if (!developmentUrl || !url.startsWith(developmentUrl)) event.preventDefault()
+    try {
+      if (!developmentUrl || new URL(url).origin !== new URL(developmentUrl).origin) event.preventDefault()
+    } catch {
+      event.preventDefault()
+    }
   })
 
   const developmentUrl = process.env.VITE_DEV_SERVER_URL
   if (developmentUrl) void window.loadURL(developmentUrl)
   else void window.loadFile(path.join(__dirname, '../../renderer/index.html'))
   return window
+}
+
+function publishRemoteSettings(state: RemoteSettingsState): void {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote-settings:state', state)
+}
+
+function queueAuthCallback(input: unknown): void {
+  if (remoteGatewayMode || coreMode) return
+  let callback: string
+  try {
+    callback = validateAuthCallbackUrl(input)
+  } catch {
+    console.error('Agent Console rejected an invalid authentication callback.')
+    return
+  }
+  if (!pendingAuthCallbacks.includes(callback)) pendingAuthCallbacks.push(callback)
+  if (pendingAuthCallbacks.length > 8) pendingAuthCallbacks.shift()
+  drainAuthCallbacks()
+}
+
+function drainAuthCallbacks(): void {
+  if (!remoteDesktop || authCallbackDrain || pendingAuthCallbacks.length === 0) return
+  authCallbackDrain = (async () => {
+    while (remoteDesktop && pendingAuthCallbacks.length > 0) {
+      const callback = pendingAuthCallbacks.shift()!
+      try {
+        publishRemoteSettings(await remoteDesktop.handleAuthCallback(callback))
+      } catch {
+        // Never echo a callback code or provider response into logs.
+        console.error('Agent Console could not complete the authentication callback.')
+      }
+    }
+  })().finally(() => {
+    authCallbackDrain = null
+    if (pendingAuthCallbacks.length > 0) drainAuthCallbacks()
+  })
+}
+
+function environmentDirectory(variable: string, fallback: string): string {
+  const value = process.env[variable]
+  if (!value) return fallback
+  if (!path.isAbsolute(value)
+    || path.normalize(value) !== value
+    || Buffer.byteLength(value, 'utf8') > 4_096
+    || /[\0\r\n]/.test(value)) {
+    throw new Error(`${variable} must be one normalized absolute directory.`)
+  }
+  return value
+}
+
+async function createRemoteServiceManager(
+  coreState: CoreServiceState,
+  paths: ReturnType<typeof resolveCorePaths>,
+): Promise<RemoteServiceManager | null> {
+  if (!app.isPackaged || coreState.mode !== 'systemd-user') return null
+  const configHome = environmentDirectory('XDG_CONFIG_HOME', path.join(os.homedir(), '.config'))
+  const dataHome = environmentDirectory('XDG_DATA_HOME', path.join(os.homedir(), '.local', 'share'))
+  const remoteEnvironmentFile = await privateRemoteEnvironmentFile(configHome)
+  if (!remoteEnvironmentFile) return null
+  const privatePaths = await readRemoteServicePrivatePaths(remoteEnvironmentFile)
+  const remoteDataDirectory = path.join(dataHome, 'agent-console', 'remote')
+  return new RemoteServiceManager({
+    appExecutable: coreState.launchExecutable,
+    launcher: path.join(remoteDataDirectory, 'bin', 'agent-console-remote-service'),
+    packagedRemoteDirectory: path.join(process.resourcesPath, 'remote'),
+    remoteEnvironmentFile,
+    gatewaySocketPath: paths.gatewaySocketPath,
+    desktopCoreSocketPath: paths.desktopSocketPath,
+    sshKeyPath: privatePaths.sshKeyPath,
+    sshPublicKeyPath: privatePaths.sshPublicKeyPath,
+    knownHostsPath: privatePaths.knownHostsPath,
+    applicationReadOnlyPath: path.dirname(coreState.launchExecutable),
+  })
 }
 
 function publishCoreConnection(next: CoreConnectionState): void {
@@ -340,6 +456,37 @@ function registerIpc(): void {
     }
   })
   ipcMain.handle('update:open-releases', () => shell.openExternal('https://github.com/constchange/agent-console/releases'))
+
+  const remote = () => {
+    if (!remoteDesktop) throw new Error('Mobile Remote is not ready.')
+    return remoteDesktop
+  }
+  const remoteIpc = (expectedArguments: number, handler: (args: readonly unknown[]) => unknown) => (
+    event: IpcMainInvokeEvent,
+    ...args: unknown[]
+  ) => {
+    assertRemoteIpcInvocation(event, mainWindow, args, expectedArguments)
+    return handler(args)
+  }
+  ipcMain.handle('remote-settings:get', remoteIpc(0, () => remote().settings()))
+  ipcMain.handle('remote-settings:sign-up', remoteIpc(1, ([input]) => remote().signUp(input)))
+  ipcMain.handle('remote-settings:sign-in', remoteIpc(1, ([input]) => remote().signIn(input)))
+  ipcMain.handle('remote-settings:sign-out', remoteIpc(0, () => remote().signOut()))
+  ipcMain.handle('remote-settings:resend-verification', remoteIpc(0, () => remote().resendVerification()))
+  ipcMain.handle('remote-settings:request-password-reset', remoteIpc(1, ([email]) => remote().requestPasswordReset(email)))
+  ipcMain.handle('remote-settings:complete-password-recovery', remoteIpc(1, ([input]) => remote().completePasswordRecovery(input)))
+  ipcMain.handle('remote-settings:enable', remoteIpc(0, () => remote().enable()))
+  ipcMain.handle('remote-settings:disable', remoteIpc(0, () => remote().disable()))
+  ipcMain.handle('remote-settings:pairing-begin', remoteIpc(0, () => remote().beginPairing()))
+  ipcMain.handle('remote-settings:pairing-cancel', remoteIpc(1, ([pairingId]) => remote().cancelPairing(pairingId)))
+  ipcMain.handle('remote-settings:pairing-decide', remoteIpc(1, ([input]) => remote().decidePairing(input)))
+  ipcMain.handle('remote-settings:device-revoke', remoteIpc(1, ([deviceId]) => remote().revokeDevice(deviceId)))
+  ipcMain.handle('remote-settings:device-retry-sync', remoteIpc(1, ([deviceId]) => remote().retryDeviceSync(deviceId)))
+  ipcMain.handle('remote-settings:agent-permission', remoteIpc(1, ([input]) => remote().setAgentPermission(input)))
+  ipcMain.handle('remote-settings:workstation-rename', remoteIpc(1, ([displayName]) => remote().renameWorkstation(displayName)))
+  ipcMain.handle('remote-settings:doctor', remoteIpc(0, () => remote().doctor()))
+  // remote-settings:workstation-remove is intentionally not registered. The
+  // public state projection also forces canRemoveWorkstation=false.
 }
 
 async function startDesktop(): Promise<void> {
@@ -347,8 +494,12 @@ async function startDesktop(): Promise<void> {
   const userDataPath = app.getPath('userData')
   const paths = resolveCorePaths(userDataPath)
   coreService = new CoreServiceManager(userDataPath)
-  await coreService.installAndStart()
-  coreClient = new CoreClient({ socketPath: paths.socketPath, clientVersion: app.getVersion() })
+  const coreServiceState = await coreService.installAndStart()
+  coreClient = new CoreClient({
+    socketPath: paths.desktopSocketPath,
+    channel: 'desktop',
+    clientVersion: app.getVersion(),
+  })
   coreClient.onConnectionChange((connected) => {
     if (!connected) {
       coreStateGeneration += 1
@@ -363,12 +514,37 @@ async function startDesktop(): Promise<void> {
         if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('runtime:snapshot', snapshot)
       })
     }
+    if (event.type === 'remote.settings' && remoteDesktop) {
+      void remoteDesktop.projectEvent(event.payload).then((state) => {
+        publishRemoteSettings(state)
+      }).catch(() => {
+        console.error('Agent Console rejected an invalid Mobile Remote state event.')
+      })
+    }
   })
   const bootstrap = await connectToCore(true)
   terminals = new TerminalManager(bootstrap.state.settings)
   updates = new UpdateManager()
+  const remoteServices = await createRemoteServiceManager(coreServiceState, paths).catch(() => null)
+  remoteDesktop = new RemoteDesktopController({
+    request<T>(method: string, params?: unknown, timeoutMs?: number) {
+      return coreClient.request<T>(method as CoreHandlerMethod, params, timeoutMs)
+    },
+  }, remoteServices, async () => {
+    const reconnectWasEnabled = desktopStarted
+    desktopStarted = false
+    coreClient.disconnect()
+    try {
+      await coreService.refreshRemoteEnvironment()
+      await connectToCore(false)
+    } finally {
+      desktopStarted = reconnectWasEnabled
+      if (reconnectWasEnabled && !coreClient.connected) scheduleReconnect()
+    }
+  })
   registerIpc()
   mainWindow = createWindow()
+  drainAuthCallbacks()
   updates.subscribe((updateState) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('update:state', updateState)
   })
@@ -388,24 +564,51 @@ async function startConsoleCore(): Promise<void> {
   const userDataPath = configuredCoreUserDataPath()
   const paths = resolveCorePaths(userDataPath)
   const lock = new CoreInstanceLock(paths.lockPath)
-  const core = new ConsoleCore(userDataPath, app.getVersion())
-  const server = new LocalCoreServer({
-    socketPath: paths.socketPath,
-    serverVersion: app.getVersion(),
-    handler: (method, params, context) => core.handle(method, params, context),
-    onConnectionCount: (count) => core.setClientCount(count),
-  })
-  // Current events contain full local runtime/config snapshots. They are sent
-  // live but never retained for replay; a reconnect always obtains one fresh
-  // bootstrap instead of buffering old private output.
-  core.setEventPublisher((type, payload) => server.publish(type, payload, { replayable: false }))
+  const coreOptions: ConsoleCoreOptions = {
+    runtime: createDefaultCoreTaskRuntimeDependencies(app.getVersion()),
+    remote: {
+      environment: process.env,
+      safeStorage,
+    },
+  }
+  const core = new ConsoleCore(userDataPath, app.getVersion(), coreOptions)
+  let desktopServer: LocalCoreServer | null = null
+  let gatewayServer: LocalCoreServer | null = null
   await lock.acquire()
   try {
     await core.start()
-    await server.start()
-    coreRuntime = { core, server, lock }
+    desktopServer = new LocalCoreServer({
+      socketPath: paths.desktopSocketPath,
+      channel: 'desktop',
+      serverVersion: app.getVersion(),
+      handler: (method, params, context) => core.handle(method, params, context),
+      allowedMethods: DESKTOP_CORE_METHODS,
+      eventsEnabled: true,
+      onConnectionCount: (count) => core.setClientCount('desktop', count),
+      onConnectionClosed: (connectionId, channel) => core.onConnectionClosed(connectionId, channel),
+    })
+    gatewayServer = new LocalCoreServer({
+      socketPath: paths.gatewaySocketPath,
+      channel: 'gateway',
+      serverVersion: app.getVersion(),
+      handler: (method, params, context) => core.handle(method, params, context),
+      allowedMethods: GATEWAY_CORE_METHODS,
+      // Gateway clients must read events only through the authorized
+      // remote.stream.open/poll bridge. Built-in subscriptions would bypass
+      // JWT, device grants, and revocation checks.
+      eventsEnabled: false,
+      onConnectionCount: (count) => core.setClientCount('gateway', count),
+      onConnectionClosed: (connectionId, channel) => core.onConnectionClosed(connectionId, channel),
+    })
+    // Desktop events may contain private runtime/config snapshots and are
+    // never replayed. The Gateway socket has no notification channel.
+    core.setDesktopEventPublisher((type, payload) => desktopServer!.publish(type, payload, { replayable: false }))
+    await desktopServer.start()
+    await gatewayServer.start()
+    coreRuntime = { core, desktopServer, gatewayServer, lock }
   } catch (error) {
-    await server.close().catch(() => undefined)
+    await gatewayServer?.close().catch(() => undefined)
+    await desktopServer?.close().catch(() => undefined)
     await core.stop().catch(() => undefined)
     await lock.release().catch(() => undefined)
     throw error
@@ -416,17 +619,44 @@ async function stopConsoleCore(): Promise<void> {
   const runtime = coreRuntime
   coreRuntime = null
   if (!runtime) return
-  await runtime.server.close().catch(() => undefined)
+  await runtime.gatewayServer.close().catch(() => undefined)
+  await runtime.desktopServer.close().catch(() => undefined)
   await runtime.core.stop().catch(() => undefined)
   await runtime.lock.release().catch(() => undefined)
+}
+
+async function startRemoteGateway(): Promise<void> {
+  remoteGatewayRuntime = await startRemoteGatewayRuntime({
+    argv: process.argv,
+    environment: process.env,
+    clientVersion: app.getVersion(),
+  })
+}
+
+async function stopRemoteGateway(): Promise<void> {
+  const runtime = remoteGatewayRuntime
+  remoteGatewayRuntime = null
+  await runtime?.close()
+}
+
+function startForRole(): Promise<void> {
+  if (coreMode) return startConsoleCore()
+  if (remoteGatewayMode) return startRemoteGateway()
+  return startDesktop()
 }
 
 const hasApplicationInstanceLock = app.requestSingleInstanceLock()
 
 if (!hasApplicationInstanceLock) app.quit()
 
-if (!coreMode) {
-  app.on('second-instance', () => {
+if (!headlessMode) {
+  app.on('second-instance', (_event, argv) => {
+    try {
+      const callback = authCallbackFromArguments(argv)
+      if (callback) queueAuthCallback(callback)
+    } catch {
+      console.error('Agent Console rejected invalid authentication callback arguments.')
+    }
     if (!mainWindow || mainWindow.isDestroyed()) return
     if (mainWindow.isMinimized()) mainWindow.restore()
     mainWindow.show()
@@ -434,10 +664,27 @@ if (!coreMode) {
   })
 }
 
-if (hasApplicationInstanceLock) app.whenReady().then(coreMode ? startConsoleCore : startDesktop).catch((error) => {
+app.on('open-url', (event, url) => {
+  event.preventDefault()
+  queueAuthCallback(url)
+})
+
+try {
+  const initialCallback = authCallbackFromArguments(process.argv)
+  if (initialCallback) queueAuthCallback(initialCallback)
+} catch {
+  console.error('Agent Console rejected invalid authentication callback arguments.')
+}
+
+if (hasApplicationInstanceLock) app.whenReady().then(async () => {
+  if (!headlessMode && app.isPackaged && !app.setAsDefaultProtocolClient('agent-console')) {
+    console.error('Agent Console could not register its authentication callback protocol.')
+  }
+  await startForRole()
+}).catch((error) => {
   const message = error instanceof Error ? error.message : String(error)
-  if (coreMode) {
-    console.error('Agent Console Core could not start:', message)
+  if (headlessMode) {
+    console.error(remoteGatewayMode ? 'Agent Console Remote Gateway could not start:' : 'Agent Console Core could not start:', message)
     app.exit(1)
     return
   }
@@ -456,7 +703,7 @@ if (hasApplicationInstanceLock) app.whenReady().then(coreMode ? startConsoleCore
 })
 
 app.on('window-all-closed', () => {
-  if (coreMode) return
+  if (headlessMode) return
   updates?.stop()
   if (process.platform !== 'darwin') app.quit()
 })
@@ -467,6 +714,15 @@ app.on('before-quit', (event) => {
     event.preventDefault()
     if (quitPreparation) return
     quitPreparation = stopConsoleCore().finally(() => {
+      quitPrepared = true
+      app.quit()
+    })
+    return
+  }
+  if (remoteGatewayMode) {
+    event.preventDefault()
+    if (quitPreparation) return
+    quitPreparation = stopRemoteGateway().finally(() => {
       quitPrepared = true
       app.quit()
     })
@@ -506,7 +762,7 @@ app.on('before-quit', (event) => {
     })
 })
 
-if (coreMode) {
+if (headlessMode) {
   process.once('SIGTERM', () => app.quit())
   process.once('SIGINT', () => app.quit())
 }

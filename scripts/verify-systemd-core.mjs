@@ -12,13 +12,15 @@ const root = path.resolve(import.meta.dirname, '..')
 const packageJson = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'))
 const executable = process.argv[2] ? path.resolve(process.argv[2]) : ''
 const { renderCoreServiceUnit } = require(path.join(root, 'dist/electron/core/services/core-service-unit.js'))
+const { CORE_PROTOCOL_VERSION, CORE_RPC_ERROR } = require(path.join(root, 'dist/electron/shared/core-protocol.js'))
 const serviceName = 'agent-console-core.service'
 const runtimeRoot = process.env.XDG_RUNTIME_DIR
 const configHome = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config')
 const unitPath = path.join(configHome, 'systemd', 'user', serviceName)
 const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-console-systemd-verification-'))
 const userData = path.join(fixtureRoot, 'user-data')
-const socketPath = runtimeRoot ? path.join(runtimeRoot, 'agent-console', 'core.sock') : ''
+const desktopSocketPath = runtimeRoot ? path.join(runtimeRoot, 'agent-console', 'desktop', 'core.sock') : ''
+const gatewaySocketPath = runtimeRoot ? path.join(runtimeRoot, 'agent-console', 'gateway', 'core.sock') : ''
 const tmuxSession = `agent-console-ci-${process.pid}`
 const COMMAND_TIMEOUT_MS = 20_000
 const RPC_CONNECT_TIMEOUT_MS = 5_000
@@ -34,6 +36,17 @@ function checkpoint(message) {
 
 function invariant(condition, message) {
   if (!condition) throw new Error(message)
+}
+
+async function expectRpcError(rpc, method, params, expectedCode) {
+  let failure = null
+  try {
+    await rpc.request(method, params)
+  } catch (error) {
+    failure = error
+  }
+  invariant(failure instanceof Error, `${method} unexpectedly crossed the Core channel boundary`)
+  invariant(failure.message.startsWith(`${expectedCode}:`), `${method} failed with an unexpected error: ${failure.message}`)
 }
 
 async function verifySystemdUnit(targetPath) {
@@ -178,20 +191,21 @@ async function connectToCore(previousPid = null, timeoutMs = 20_000) {
   let lastError = null
   checkpoint(`waiting up to ${timeoutMs} ms for ${previousPid ? 'a replacement' : 'the'} Core`)
   while (Date.now() < deadline) {
-    const isSocket = await fs.stat(socketPath).then((stat) => stat.isSocket(), () => false)
+    const isSocket = await fs.stat(desktopSocketPath).then((stat) => stat.isSocket(), () => false)
     if (!isSocket) {
       await new Promise((resolve) => setTimeout(resolve, 100))
       continue
     }
     const remaining = () => Math.max(1, deadline - Date.now())
-    const rpc = createRpcClient(socketPath, {
+    const rpc = createRpcClient(desktopSocketPath, {
       connectTimeoutMs: Math.min(RPC_CONNECT_TIMEOUT_MS, remaining()),
       requestTimeoutMs: Math.min(RPC_REQUEST_TIMEOUT_MS, remaining()),
     })
     try {
       await rpc.connected
       await rpc.request('initialize', {
-        protocolVersion: 1,
+        protocolVersion: CORE_PROTOCOL_VERSION,
+        expectedChannel: 'desktop',
         client: { name: 'systemd-package-verifier', version: packageJson.version },
       }, Math.min(RPC_REQUEST_TIMEOUT_MS, remaining()))
       await rpc.request('events.subscribe', { afterSeq: 0 }, Math.min(RPC_REQUEST_TIMEOUT_MS, remaining()))
@@ -209,9 +223,30 @@ async function connectToCore(previousPid = null, timeoutMs = 20_000) {
       await new Promise((resolve) => setTimeout(resolve, 100))
     }
   }
-  const timeout = new Error(`Timed out after ${timeoutMs} ms waiting for ${socketPath}`)
+  const timeout = new Error(`Timed out after ${timeoutMs} ms waiting for ${desktopSocketPath}`)
   if (lastError instanceof Error) timeout.cause = lastError
   throw timeout
+}
+
+async function verifyChannelBoundaries(desktopRpc) {
+  await expectRpcError(desktopRpc, 'remote.health', undefined, CORE_RPC_ERROR.METHOD_NOT_FOUND)
+  invariant(await fs.stat(gatewaySocketPath).then((stat) => stat.isSocket(), () => false), `Gateway Core socket is missing: ${gatewaySocketPath}`)
+  const gatewayRpc = createRpcClient(gatewaySocketPath)
+  try {
+    await gatewayRpc.connected
+    const initialized = await gatewayRpc.request('initialize', {
+      protocolVersion: CORE_PROTOCOL_VERSION,
+      expectedChannel: 'gateway',
+      client: { name: 'systemd-gateway-verifier', version: packageJson.version },
+    })
+    invariant(initialized.channel === 'gateway', 'Gateway RPC initialized on the wrong channel')
+    await gatewayRpc.request('events.subscribe', { afterSeq: 0 })
+    const health = await gatewayRpc.request('remote.health')
+    invariant(health.online === true, 'Gateway RPC health is not online')
+    await expectRpcError(gatewayRpc, 'config.get', undefined, CORE_RPC_ERROR.METHOD_NOT_FOUND)
+  } finally {
+    gatewayRpc.close()
+  }
 }
 
 async function listeningTcpSocketsOwnedBy(pid) {
@@ -292,7 +327,19 @@ async function runVerification() {
   invariant(executable, 'Pass the installed Agent Console executable as the first argument.')
   invariant(runtimeRoot && path.isAbsolute(runtimeRoot), 'XDG_RUNTIME_DIR must be an absolute user runtime directory.')
   await Promise.all([fs.access(executable), runCommand('tmux', ['-V']), systemctl('show-environment')])
-  invariant(!await fs.stat(socketPath).then(() => true, () => false), `Refusing to replace an existing Core socket: ${socketPath}`)
+  checkpoint('verifying user-manager support for the Gateway localhost IP policy')
+  await runCommand('systemd-run', [
+    '--user',
+    '--wait',
+    '--collect',
+    '--quiet',
+    `--unit=agent-console-remote-ip-filter-check-${process.pid}`,
+    '--property=IPAddressDeny=any',
+    '--property=IPAddressAllow=localhost',
+    '/usr/bin/true',
+  ])
+  invariant(!await fs.stat(desktopSocketPath).then(() => true, () => false), `Refusing to replace an existing Core socket: ${desktopSocketPath}`)
+  invariant(!await fs.stat(gatewaySocketPath).then(() => true, () => false), `Refusing to replace an existing Core socket: ${gatewaySocketPath}`)
   invariant(!await fs.stat(unitPath).then(() => true, () => false), `Refusing to replace an existing user service: ${unitPath}`)
 
   checkpoint('writing and validating the isolated user service')
@@ -310,6 +357,7 @@ async function runVerification() {
   const first = await connectToCore()
   invariant(first.health.appVersion === packageJson.version, `systemd Core reports ${first.health.appVersion}`)
   invariant(first.health.transport === 'unix' && first.health.tcpListening === false, 'systemd Core reports an unsafe transport')
+  await verifyChannelBoundaries(first.rpc)
   invariant((await listeningTcpSocketsOwnedBy(first.health.pid)).length === 0, 'systemd Core opened a TCP listener')
   const environment = (await fs.readFile(`/proc/${first.health.pid}/environ`, 'utf8')).split('\u0000')
   invariant(!environment.some((entry) => entry.startsWith('DISPLAY=') && entry !== 'DISPLAY='), 'systemd Core inherited DISPLAY')
@@ -326,6 +374,7 @@ async function runVerification() {
   await systemctl('restart', serviceName)
   const second = await connectToCore(first.health.pid)
   invariant(second.health.pid !== first.health.pid, 'systemd restart did not replace the Core process')
+  await verifyChannelBoundaries(second.rpc)
   await runCommand('tmux', ['has-session', '-t', tmuxSession])
   const bootstrap = await second.rpc.request('core.bootstrap')
   invariant(bootstrap.state.projects[0].name === 'Systemd Verification', 'systemd restart did not preserve state')
