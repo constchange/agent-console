@@ -2,7 +2,10 @@ import path from 'node:path'
 
 export interface CorePaths {
   runtimeDirectory: string
-  socketPath: string
+  desktopRuntimeDirectory: string
+  gatewayRuntimeDirectory: string
+  desktopSocketPath: string
+  gatewaySocketPath: string
   lockPath: string
   databasePath: string
 }
@@ -19,9 +22,14 @@ export function resolveCorePaths(
   const runtimeDirectory = runtimeRoot && path.isAbsolute(runtimeRoot)
     ? path.join(runtimeRoot, 'agent-console')
     : path.join(userDataPath, 'runtime')
+  const desktopRuntimeDirectory = path.join(runtimeDirectory, 'desktop')
+  const gatewayRuntimeDirectory = path.join(runtimeDirectory, 'gateway')
   return {
     runtimeDirectory,
-    socketPath: path.join(runtimeDirectory, 'core.sock'),
+    desktopRuntimeDirectory,
+    gatewayRuntimeDirectory,
+    desktopSocketPath: path.join(desktopRuntimeDirectory, 'core.sock'),
+    gatewaySocketPath: path.join(gatewayRuntimeDirectory, 'core.sock'),
     lockPath: path.join(userDataPath, 'console-core.lock'),
     databasePath: path.join(userDataPath, 'console-core.sqlite'),
   }

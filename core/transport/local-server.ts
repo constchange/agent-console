@@ -4,13 +4,15 @@ import net from 'node:net'
 import path from 'node:path'
 import {
   CORE_EVENT_NOTIFICATION,
-  CORE_HANDLER_METHODS,
+  GATEWAY_CORE_METHODS,
   CORE_MAX_MESSAGE_BYTES,
   CORE_PROTOCOL_VERSION,
   CORE_RPC_ERROR,
   CoreRpcException,
   isCoreHandlerMethod,
+  isMethodAllowedForChannel,
   type CoreClientInfo,
+  type CoreChannel,
   type CoreEvent,
   type CoreEventSubscriptionResult,
   type CoreHandlerMethod,
@@ -38,12 +40,16 @@ interface ConnectionState {
 
 export interface LocalCoreServerOptions {
   socketPath: string
+  channel: CoreChannel
   serverVersion: string
   handler: CoreRequestHandler
   serverName?: string
-  allowedMethods?: readonly CoreHandlerMethod[]
+  allowedMethods: readonly CoreHandlerMethod[]
+  eventsEnabled: boolean
+  initialEventSeq?: number
   maxEventHistory?: number
   onConnectionCount?: (count: number) => void
+  onConnectionClosed?: (connectionId: string, channel: CoreChannel) => void
 }
 
 export interface CorePublishOptions {
@@ -53,6 +59,7 @@ export interface CorePublishOptions {
 const MAX_REPLAY_EVENTS_PER_SUBSCRIPTION = 100
 const MAX_REPLAY_BYTES_PER_SUBSCRIPTION = 2 * 1024 * 1024
 const MAX_SOCKET_BUFFER_BYTES = 4 * 1024 * 1024
+const GATEWAY_BRIDGE_METHOD_SET: ReadonlySet<string> = new Set(GATEWAY_CORE_METHODS)
 
 function errorCode(error: unknown): string {
   return error && typeof error === 'object' && 'code' in error ? String(error.code) : ''
@@ -121,32 +128,46 @@ async function socketIsLive(socketPath: string): Promise<boolean> {
 export class LocalCoreServer {
   private readonly instanceId = randomUUID()
   private readonly socketPath: string
+  private readonly channel: CoreChannel
   private readonly serverName: string
   private readonly serverVersion: string
   private readonly handler: CoreRequestHandler
   private readonly allowedMethods: ReadonlySet<CoreHandlerMethod>
+  private readonly eventsEnabled: boolean
   private readonly maxEventHistory: number
   private readonly onConnectionCount: (count: number) => void
+  private readonly onConnectionClosed: (connectionId: string, channel: CoreChannel) => void
   private readonly connections = new Set<ConnectionState>()
   private readonly server: net.Server
   private eventHistory: CoreEvent[] = []
-  private eventSequence = 0
+  private eventSequence: number
   private ownsSocket = false
 
   constructor(options: LocalCoreServerOptions) {
     if (!path.isAbsolute(options.socketPath)) throw new Error('The Core socket path must be absolute.')
     if (!options.serverVersion.trim()) throw new Error('A server version is required.')
-    const requestedMethods = options.allowedMethods ?? CORE_HANDLER_METHODS
+    const requestedMethods = options.allowedMethods
     if (requestedMethods.some((method) => !isCoreHandlerMethod(method))) {
       throw new Error('The Core server method allowlist contains an unknown method.')
     }
+    if (requestedMethods.some((method) => !isMethodAllowedForChannel(method, options.channel))) {
+      throw new Error(`The ${options.channel} Core server allowlist contains a method from another channel.`)
+    }
+    const initialEventSeq = options.initialEventSeq ?? 0
+    if (!Number.isSafeInteger(initialEventSeq) || initialEventSeq < 0) {
+      throw new Error('The initial Core event sequence must be a non-negative safe integer.')
+    }
     this.socketPath = options.socketPath
+    this.channel = options.channel
     this.serverName = options.serverName?.trim() || 'agent-console-core'
     this.serverVersion = options.serverVersion.trim()
     this.handler = options.handler
     this.allowedMethods = new Set(requestedMethods)
+    this.eventsEnabled = options.eventsEnabled
+    this.eventSequence = initialEventSeq
     this.maxEventHistory = Math.max(1, Math.min(10_000, options.maxEventHistory ?? 1_000))
     this.onConnectionCount = options.onConnectionCount ?? (() => undefined)
+    this.onConnectionClosed = options.onConnectionClosed ?? (() => undefined)
     this.server = net.createServer((socket) => this.accept(socket))
   }
 
@@ -184,6 +205,18 @@ export class LocalCoreServer {
     const normalizedType = type.trim()
     if (!normalizedType || normalizedType.length > 160) throw new Error('Core event type must be between 1 and 160 characters.')
     const event: CoreEvent = { seq: this.eventSequence + 1, type: normalizedType, payload }
+    return this.publishEvent(event, options)
+  }
+
+  publishPersisted(event: CoreEvent): CoreEvent {
+    if (!Number.isSafeInteger(event.seq) || event.seq !== this.eventSequence + 1) {
+      throw new Error(`Persisted Core event sequence must be ${this.eventSequence + 1}.`)
+    }
+    return this.publishEvent(event)
+  }
+
+  private publishEvent(event: CoreEvent, options: CorePublishOptions = {}): CoreEvent {
+    if (!this.eventsEnabled) throw new Error(`Events are disabled on the ${this.channel} Core server.`)
     const notification: CoreRpcNotification = {
       jsonrpc: '2.0',
       method: CORE_EVENT_NOTIFICATION,
@@ -270,6 +303,7 @@ export class LocalCoreServer {
     socket.on('close', () => {
       this.connections.delete(connection)
       this.onConnectionCount(this.connections.size)
+      this.onConnectionClosed(connection.id, this.channel)
     })
   }
 
@@ -317,7 +351,7 @@ export class LocalCoreServer {
 
     let reservedRequestSlot = false
     try {
-      this.checkRequestBudget(connection)
+      this.checkRequestBudget(connection, request.method)
       connection.activeRequests += 1
       reservedRequestSlot = true
       let result: unknown
@@ -328,6 +362,9 @@ export class LocalCoreServer {
           throw new CoreRpcException(CORE_RPC_ERROR.NOT_INITIALIZED, 'Call initialize before any other method.')
         }
         if (request.method === 'events.subscribe') {
+          if (!this.eventsEnabled) {
+            throw new CoreRpcException(CORE_RPC_ERROR.METHOD_NOT_FOUND, 'Events are disabled on this Core channel.')
+          }
           result = this.subscribe(connection, request.params)
         } else {
           if (!isCoreHandlerMethod(request.method) || !this.allowedMethods.has(request.method)) {
@@ -335,6 +372,7 @@ export class LocalCoreServer {
           }
           const context: CoreRequestContext = {
             connectionId: connection.id,
+            channel: this.channel,
             client: { ...connection.client },
           }
           result = await this.handler(request.method, request.params, context)
@@ -374,13 +412,20 @@ export class LocalCoreServer {
         { supportedVersion: CORE_PROTOCOL_VERSION },
       )
     }
+    if (params.expectedChannel !== this.channel) {
+      throw new CoreRpcException(
+        CORE_RPC_ERROR.FORBIDDEN_CHANNEL,
+        `This is the ${this.channel} Core channel, not ${String(params.expectedChannel)}.`,
+      )
+    }
     connection.client = validateClientInfo(params.client)
     connection.initialized = true
     return {
       protocolVersion: CORE_PROTOCOL_VERSION,
       instanceId: this.instanceId,
+      channel: this.channel,
       server: { name: this.serverName, version: this.serverVersion },
-      capabilities: { events: true },
+      capabilities: { events: this.eventsEnabled },
       currentEventSeq: this.eventSequence,
     }
   }
@@ -456,18 +501,31 @@ export class LocalCoreServer {
     connection.socket.end()
   }
 
-  private checkRequestBudget(connection: ConnectionState): void {
-    const now = Date.now()
-    if (now - connection.requestWindowStartedAt >= 10_000) {
-      connection.requestWindowStartedAt = now
-      connection.requestsInWindow = 0
-    }
-    connection.requestsInWindow += 1
-    if (connection.requestsInWindow > 500 || connection.activeRequests >= 32) {
+  private checkRequestBudget(connection: ConnectionState, method: string): void {
+    if (connection.activeRequests >= 32) {
       throw new CoreRpcException(
         CORE_RPC_ERROR.TOO_MANY_REQUESTS,
         'This local Core client is sending too many concurrent requests.',
       )
     }
+    // Gateway bridge requests have their own signed-device admission,
+    // concurrency, stream and rate limits inside the Core router. Counting
+    // pre-auth signature failures in the generic per-connection window lets
+    // anonymous candidates poison health, existing streams and later valid
+    // requests for the rest of the window. Keep the concurrency ceiling above,
+    // while the public VPS edge remains the pre-auth source-rate boundary.
+    if (this.channel === 'gateway' && connection.initialized && GATEWAY_BRIDGE_METHOD_SET.has(method)) return
+    const now = Date.now()
+    if (now - connection.requestWindowStartedAt >= 10_000) {
+      connection.requestWindowStartedAt = now
+      connection.requestsInWindow = 0
+    }
+    if (connection.requestsInWindow >= 500) {
+      throw new CoreRpcException(
+        CORE_RPC_ERROR.TOO_MANY_REQUESTS,
+        'This local Core client is sending too many concurrent requests.',
+      )
+    }
+    connection.requestsInWindow += 1
   }
 }

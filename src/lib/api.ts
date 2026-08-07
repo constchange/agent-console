@@ -8,6 +8,7 @@ import type {
   RuntimeSnapshot,
   UpdateState,
 } from '../../shared/types'
+import type { RemoteSettingsState } from '../../shared/remote-settings'
 
 let previewState: ConsoleState = {
   version: 1,
@@ -118,6 +119,40 @@ const previewCoreHealth: CoreHealth = {
   stateRevision: 'preview',
   structuredCodex: 'deferred',
   tcpListening: false,
+}
+
+let previewRemoteSettings: RemoteSettingsState = {
+  phase: 'signed-out',
+  message: 'Sign in to prepare secure mobile access to this workstation.',
+  secureStorageReady: true,
+  account: null,
+  workstation: null,
+  gateway: {
+    enabled: false,
+    localAddress: null,
+    publicBaseUrl: null,
+    gatewayPid: null,
+    tunnelActive: false,
+    lastReachableAt: null,
+  },
+  agents: [],
+  devices: [],
+  pairing: null,
+  checks: [
+    { id: 'secure-storage', label: 'Secure storage', state: 'pass', detail: 'Protected storage is available.', checkedAt: new Date().toISOString() },
+    { id: 'core', label: 'Console Core', state: 'pass', detail: 'Private Unix socket connected.', checkedAt: new Date().toISOString() },
+    { id: 'gateway', label: 'Local Gateway', state: 'not-run', detail: 'Remote control is off.', checkedAt: null },
+    { id: 'tunnel', label: 'VPS tunnel', state: 'not-run', detail: 'Remote control is off.', checkedAt: null },
+    { id: 'https', label: 'HTTPS 443', state: 'not-run', detail: 'Remote control is off.', checkedAt: null },
+  ],
+  capabilities: {
+    canRegister: true,
+    canSignIn: true,
+    canEnable: false,
+    canPair: false,
+    canRunDoctor: false,
+    canRemoveWorkstation: false,
+  },
 }
 
 function runtimeAgent(agent: AgentConfig, index: number): RuntimeAgent {
@@ -236,6 +271,82 @@ const previewApi: AgentConsoleApi = {
   getCoreHealth: async () => previewCoreHealth,
   acknowledgeCoreState: async () => undefined,
   onCoreConnection: () => () => undefined,
+  getRemoteSettings: async () => structuredClone(previewRemoteSettings),
+  remoteSignUp: async (input) => {
+    previewRemoteSettings = {
+      ...previewRemoteSettings,
+      phase: 'verification-required',
+      message: 'Check your email, then return here after verification.',
+      account: { userId: 'preview-user', email: input.email, nickname: input.nickname, emailVerified: false },
+      capabilities: { ...previewRemoteSettings.capabilities, canRegister: false, canSignIn: false },
+    }
+    return structuredClone(previewRemoteSettings)
+  },
+  remoteSignIn: async (input) => {
+    previewRemoteSettings = {
+      ...previewRemoteSettings,
+      phase: 'disabled',
+      message: 'Signed in. Mobile Remote is off until you enable it.',
+      account: { userId: 'preview-user', email: input.email, nickname: 'Preview owner', emailVerified: true },
+      workstation: { workstationId: 'preview-workstation', displayName: 'Office', pendingCloudSync: false },
+      capabilities: {
+        canRegister: false,
+        canSignIn: false,
+        canEnable: true,
+        canPair: false,
+        canRunDoctor: true,
+        canRemoveWorkstation: false,
+      },
+    }
+    return structuredClone(previewRemoteSettings)
+  },
+  remoteSignOut: async () => {
+    previewRemoteSettings = { ...previewRemoteSettings, phase: 'signed-out', account: null, message: 'Signed out. Existing workstation pairing remains locally protected.' }
+    return structuredClone(previewRemoteSettings)
+  },
+  remoteResendVerification: async () => structuredClone(previewRemoteSettings),
+  remoteRequestPasswordReset: async () => {
+    previewRemoteSettings = {
+      ...previewRemoteSettings,
+      phase: 'password-recovery',
+      message: 'Recovery email requested. Mobile Remote remains locked.',
+      gateway: { ...previewRemoteSettings.gateway, enabled: false, gatewayPid: null, tunnelActive: false },
+    }
+    return structuredClone(previewRemoteSettings)
+  },
+  remoteCompletePasswordRecovery: async () => {
+    previewRemoteSettings = { ...previewRemoteSettings, phase: 'disabled', message: 'Password updated. Mobile Remote remains off.' }
+    return structuredClone(previewRemoteSettings)
+  },
+  remoteEnable: async () => {
+    previewRemoteSettings = {
+      ...previewRemoteSettings,
+      phase: 'ready',
+      message: 'Mobile Remote is online through HTTPS 443.',
+      gateway: { enabled: true, localAddress: '127.0.0.1:43127', publicBaseUrl: 'https://remote.example.invalid', gatewayPid: 4321, tunnelActive: true, lastReachableAt: new Date().toISOString() },
+      capabilities: { ...previewRemoteSettings.capabilities, canEnable: false, canPair: true },
+    }
+    return structuredClone(previewRemoteSettings)
+  },
+  remoteDisable: async () => {
+    previewRemoteSettings = { ...previewRemoteSettings, phase: 'disabled', message: 'Mobile Remote is off.', gateway: { ...previewRemoteSettings.gateway, enabled: false, gatewayPid: null, tunnelActive: false }, capabilities: { ...previewRemoteSettings.capabilities, canEnable: true, canPair: false } }
+    return structuredClone(previewRemoteSettings)
+  },
+  remoteBeginPairing: async () => structuredClone(previewRemoteSettings),
+  remoteCancelPairing: async () => structuredClone(previewRemoteSettings),
+  remoteDecidePairing: async () => structuredClone(previewRemoteSettings),
+  remoteRevokeDevice: async () => structuredClone(previewRemoteSettings),
+  remoteRetryDeviceSync: async () => structuredClone(previewRemoteSettings),
+  remoteUpdateAgentPermission: async () => structuredClone(previewRemoteSettings),
+  remoteRenameWorkstation: async (displayName) => {
+    previewRemoteSettings = previewRemoteSettings.workstation
+      ? { ...previewRemoteSettings, workstation: { ...previewRemoteSettings.workstation, displayName } }
+      : previewRemoteSettings
+    return structuredClone(previewRemoteSettings)
+  },
+  remoteRunDoctor: async () => structuredClone(previewRemoteSettings),
+  remoteRemoveWorkstation: async () => structuredClone(previewRemoteSettings),
+  onRemoteSettings: () => () => undefined,
 }
 
 export function getApi(): AgentConsoleApi {

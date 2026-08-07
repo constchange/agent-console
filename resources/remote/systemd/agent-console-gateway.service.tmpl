@@ -1,0 +1,51 @@
+[Unit]
+Description=Agent Console restricted mobile Remote Gateway
+After=agent-console-core.service
+Wants=agent-console-core.service
+PartOf=agent-console-core.service
+ConditionPathIsReadWrite=%t
+ConditionPathExists=@@REMOTE_ENV_FILE@@
+
+[Service]
+Type=simple
+EnvironmentFile=-@@REMOTE_ENV_FILE@@
+Environment=HOME=%t/agent-console-gateway/home
+Environment=XDG_CONFIG_HOME=%t/agent-console-gateway/config
+Environment=XDG_CACHE_HOME=%t/agent-console-gateway/cache
+Environment=DISPLAY=
+Environment=WAYLAND_DISPLAY=
+RuntimeDirectory=agent-console-gateway
+RuntimeDirectoryMode=0700
+ExecCondition=/usr/bin/test -x "@@APP_EXECUTABLE@@"
+ExecCondition=/usr/bin/test -r "@@GATEWAY_SOCKET@@"
+ExecStartPre=/usr/bin/install -d -m 0700 %t/agent-console-gateway/home %t/agent-console-gateway/config %t/agent-console-gateway/cache
+ExecStart="@@APP_EXECUTABLE@@" --disable-gpu --ozone-platform=headless --remote-gateway "--remote-gateway-socket=@@GATEWAY_SOCKET@@"
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+KillMode=mixed
+UMask=0077
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=tmpfs
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+InaccessiblePaths=@@DESKTOP_CORE_SOCKET@@
+@@APPLICATION_READ_ONLY_LINE@@
+
+[Install]
+WantedBy=default.target

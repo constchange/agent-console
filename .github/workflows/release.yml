@@ -9,10 +9,18 @@ on:
     paths:
       - core/**
       - electron/**
+      - gateway/**
+      - resources/remote/**
       - shared/**
       - src/**
+      - supabase/**
+      - tests/remote-*.test.ts
+      - tests/remote-*.test.tsx
+      - tests/vps-*.test.ts
+      - docs/REMOTE-DEPLOYMENT.md
       - scripts/verify-packaged-core.mjs
       - scripts/verify-systemd-core.mjs
+      - scripts/verify-remote-deployment.mjs
       - package.json
       - package-lock.json
       - release-notes.md
@@ -98,7 +106,9 @@ jobs:
         if: steps.release.outputs.needs_publish == 'true'
         run: |
           npm test
+          npm run test:remote-deployment
           npm run typecheck
+          node scripts/verify-remote-deployment.mjs
           npm run package:linux
 
       - name: Install deb and locate the system executable
@@ -116,6 +126,14 @@ jobs:
           test -x "$installed_executable"
           installed_owner="$(dpkg-query -S "$installed_executable" | head -n 1)"
           test "${installed_owner%%:*}" = "$package_name"
+          remote_command="$(command -v agent-console-remote)"
+          remote_executable="$(readlink -f "$remote_command")"
+          test -n "$remote_executable"
+          test -f "$remote_executable"
+          test -x "$remote_executable"
+          remote_owner="$(dpkg-query -S "$remote_executable" | head -n 1)"
+          test "${remote_owner%%:*}" = "$package_name"
+          agent-console-remote help >/dev/null
           echo "executable=$installed_executable" >> "$GITHUB_OUTPUT"
 
       - name: Verify installed packages, persistent Core, and network boundary

@@ -8,6 +8,10 @@ artifacts/
 .env
 .env.*
 !.env.example
+remote.env
+**/remote.env
+id_ed25519
+id_ed25519.pub
 *.pem
 *.key
 *.p12

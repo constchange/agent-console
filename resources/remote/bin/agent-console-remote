@@ -1,0 +1,21 @@
+#!/bin/sh
+set -eu
+
+launcher_path=$(readlink -f -- "$0")
+script_dir=$(CDPATH= cd -- "$(dirname -- "$launcher_path")" && pwd -P)
+cli_file="$script_dir/../cli/agent-console-remote.mjs"
+
+if [ -n "${APPIMAGE:-}" ] && [ -x "$APPIMAGE" ]; then
+  app_executable="$APPIMAGE"
+else
+  resources_dir=$(CDPATH= cd -- "$script_dir/../.." && pwd -P)
+  app_executable="$(dirname -- "$resources_dir")/agent-console"
+fi
+
+if [ -x "$app_executable" ]; then
+  export AGENT_CONSOLE_APP_EXECUTABLE="$app_executable"
+  export ELECTRON_RUN_AS_NODE=1
+  exec "$app_executable" "$cli_file" "$@"
+fi
+
+exec node "$cli_file" "$@"

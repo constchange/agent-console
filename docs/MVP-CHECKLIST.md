@@ -14,7 +14,10 @@
 | Manual rename | Discovery import opens full identity and matching editor before saving |
 | Local persistence | Console Core is the sole writer of the atomic JSON state file; local task events use a private SQLite ledger |
 | Background continuity | A user-level Core stays active after the desktop window closes; `KillMode=process` avoids sending termination to tmux/Agent children when Core stops |
-| Local IPC | Versioned JSON-RPC over a `0600` Unix socket in a `0700` per-user directory; production package verification asserts zero Core TCP listeners |
+| Local IPC | Protocol-v2 JSON-RPC over separate desktop/Gateway `0600` Unix sockets in `0700` directories; channel-bound allowlists and package verification assert zero Core TCP listeners |
+| Mobile Remote settings | Honest unconfigured/secure-storage states, account verification, enable/disable, pairing SAS, device revocation, per-Agent capabilities, workstation rename, and Doctor checks; workstation removal remains fail-closed |
+| Remote deployment | Private `remote.env`, localhost-only Gateway, autossh reverse tunnel, restricted VPS key/account, Caddy/Nginx 443 templates, install/render/doctor/uninstall CLI |
+| Remote packaging | Exact extraResources allowlist, deb `agent-console-remote` PATH command, AppImage Settings/bootstrap route, systemd/package acceptance, and no configured env/key material |
 | Security | Sandboxed renderer, context isolation, narrow contextBridge/RPC allowlists, navigation blocked, private umask |
 | Editor reliability | Native Electron zoom, non-interactive hidden overlays, focus recovery, and deferred visual snapshots while forms are open |
 | Scale direction | Compact cards, Project grouping, sidebar overview, global search, process classification |
@@ -26,4 +29,5 @@
 - Reliable external window focus and close on Linux requires `wmctrl` or `xdotool`.
 - Docker containers are discovered and can be monitored, but container log/exec actions are reserved for a later version.
 - Windows process discovery and terminal adapters are a later cross-platform milestone; the current scanner is Linux-first.
-- Supabase authentication, device pairing, the VPS Gateway, push notifications, and the mobile client are later milestones and are not enabled by the desktop Core.
+- Mobile Remote is deliberately disabled until an administrator supplies a real Supabase project and VPS deployment; no production endpoint, service-role key, VPS host, or SSH key ships in the repository.
+- The separately distributed phone client, push-notification delivery, production Supabase migrations, DNS, certificates, firewall policy, and VPS operations still require environment-specific deployment and acceptance.
