@@ -26,7 +26,7 @@
 ## Known MVP limits
 
 - A generic external process does not expose its stdout to another application. Accurate last output therefore comes from tmux capture or an optional log file.
-- Reliable external window focus and close on Linux requires `wmctrl` or `xdotool`.
+- Reliable external window focus and close on Linux requires `wmctrl` or `xdotool`; the deb installs `wmctrl` automatically, while source/AppImage runs rely on a system-provided helper.
 - Docker containers are discovered and can be monitored, but container log/exec actions are reserved for a later version.
 - Windows process discovery and terminal adapters are a later cross-platform milestone; the current scanner is Linux-first.
 - Mobile Remote is deliberately disabled until an administrator supplies a real Supabase project and VPS deployment; no production endpoint, service-role key, VPS host, or SSH key ships in the repository.

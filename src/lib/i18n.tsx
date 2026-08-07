@@ -564,10 +564,10 @@ function localizedMessage(source: string, language: UiLanguage, t: I18n['t']): s
   if (match) return `${match[1]} 的终端窗口已关闭；tmux 会话仍在运行`
   match = source.match(/^(.+) terminal window was not found$/)
   if (match) return `未找到 ${match[1]} 的终端窗口`
-  match = source.match(/^(.+) terminal is already open; install wmctrl for automatic focus$/)
-  if (match) return `${match[1]} 的终端已打开；安装 wmctrl 后可自动聚焦`
-  match = source.match(/^The (.+) process is running, but its terminal window could not be focused\. Install wmctrl and try again\.$/)
-  if (match) return `${match[1]} 进程正在运行，但无法聚焦其终端窗口。请安装 wmctrl 后重试。`
+  match = source.match(/^(.+) terminal is already open, but automatic focus is unavailable$/)
+  if (match) return `${match[1]} 的终端已打开，但暂时无法自动聚焦`
+  match = source.match(/^The (.+) process is running, but Agent Console could not identify its exact terminal window\.$/)
+  if (match) return `${match[1]} 进程正在运行，但 Agent Console 无法准确识别它的终端窗口。`
   match = source.match(/^(.+) does not use tmux$/)
   if (match) return `${match[1]} 不使用 tmux`
   match = source.match(/^(.+) is already running$/)

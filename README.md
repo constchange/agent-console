@@ -53,7 +53,7 @@ Agent Console 是运行在 Linux Mint 上的本地 AI Team 控制中心。它不
 ./scripts/check-system.sh
 ```
 
-如果它提示缺少 `tmux`、`wmctrl` 或 GNOME Terminal，再执行：
+如果你是从源码运行，且它提示缺少 `tmux`、`wmctrl` 或 GNOME Terminal，再执行：
 
 ```bash
 sudo apt update
@@ -65,6 +65,8 @@ sudo apt install -y tmux wmctrl gnome-terminal
 - `tmux` 让 Agent 在终端窗口关闭后继续工作。
 - `wmctrl` 让 Agent Console 找到、聚焦和关闭已有终端窗口。
 - GNOME Terminal 是 Linux Mint 上最省心的外部终端选择；如果你已经使用 Kitty 或 Ghostty，也可以不装它。
+
+正式 deb 安装包会自动安装 `wmctrl`，不需要再单独执行这条命令。
 
 ### 第三步：第一次运行
 
@@ -143,9 +145,9 @@ tmux Agent 的最后输出可直接读取。其他程序若要显示准确的最
 
 ## “不会重复打开终端”的边界
 
-Agent Console 通过唯一 Terminal Title 和 `wmctrl` 查找窗口；发现窗口后只聚焦，不会再次创建。对于正在运行但无法定位窗口的 PID，它会停止操作并提示，而不会贸然重复启动一份进程。
+Agent Console 会为每个 Agent ID 生成独立的终端窗口身份，再通过窗口 ID 精确聚焦；即使两个 Agent 的名称和可见标题相同，也不会互相串台。对于正在运行但无法准确定位窗口的 PID，它会停止操作并提示，而不会贸然重复启动一份进程。
 
-为了获得最稳定的体验，建议长期运行的 Agent 都使用 tmux，并确保系统安装了 `wmctrl`。
+为了获得最稳定的体验，建议长期运行的 Agent 都使用 tmux。正式 deb 会自动安装窗口聚焦组件；从源码运行或使用 AppImage 时，需要系统已有 `wmctrl` 或 `xdotool`。
 
 ## 手机遥控的启用边界
 

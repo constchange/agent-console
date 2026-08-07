@@ -44,7 +44,7 @@ import { startRemoteGatewayRuntime, type RemoteGatewayRuntime } from './services
 import { assertRemoteIpcInvocation } from './services/remote-ipc-policy'
 import { readRemoteServicePrivatePaths } from './services/remote-service-config'
 import { RemoteServiceManager } from './services/remote-service-manager'
-import { TerminalManager, windowTitle } from './services/terminal-manager'
+import { TerminalManager } from './services/terminal-manager'
 import { UpdateManager } from './services/update-manager'
 
 const CORE_MODE_ARGUMENT = '--console-core'
@@ -246,12 +246,12 @@ function requestRuntimeRefresh(delayMs: number): void {
 
 async function withDesktopWindowState(snapshot: RuntimeSnapshot): Promise<RuntimeSnapshot> {
   if (!terminals) return snapshot
-  const titles = await terminals.listWindowTitles()
+  const openAgentIds = await terminals.listOpenAgentIds(snapshot.agents)
   return {
     ...snapshot,
     agents: snapshot.agents.map((agent) => ({
       ...agent,
-      terminalOpen: titles.some((title) => title.includes(windowTitle(agent)) || title.includes(agent.terminalTitle)),
+      terminalOpen: openAgentIds.has(agent.id),
     })),
   }
 }
