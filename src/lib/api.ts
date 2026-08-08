@@ -8,15 +8,19 @@ import type {
   RuntimeSnapshot,
   UpdateState,
 } from '../../shared/types'
+import { CORE_PROTOCOL_VERSION } from '../../shared/core-protocol'
 import type { RemoteSettingsState } from '../../shared/remote-settings'
 import { detectBrowserLanguage } from './i18n'
 
 let previewState: ConsoleState = {
   version: 1,
+  groups: [
+    { id: 'workspace', name: 'Workspace', collapsed: false, order: 0 },
+  ],
   projects: [
-    { id: 'product', name: 'Product', emoji: '◫', color: '#55a6ff', collapsed: false, order: 0 },
-    { id: 'sales', name: 'Sales', emoji: '↗', color: '#54c79b', collapsed: false, order: 1 },
-    { id: 'management', name: 'Management', emoji: '◆', color: '#a478ff', collapsed: false, order: 2 },
+    { id: 'product', groupId: 'workspace', name: 'Product', emoji: '◫', color: '#55a6ff', collapsed: false, order: 0 },
+    { id: 'sales', groupId: 'workspace', name: 'Sales', emoji: '↗', color: '#54c79b', collapsed: false, order: 1 },
+    { id: 'management', groupId: 'workspace', name: 'Management', emoji: '◆', color: '#a478ff', collapsed: false, order: 2 },
   ],
   agents: [],
   settings: {
@@ -35,22 +39,24 @@ const seed = (
   id: string,
   projectId: string,
   name: string,
-  emoji: string,
-  color: string,
+  _emoji: string,
+  _color: string,
   kind: AgentConfig['kind'],
   order: number,
 ): AgentConfig => ({
   id,
   projectId,
   name,
-  emoji,
-  color,
+  emoji: '',
+  color: previewState.projects.find((project) => project.id === projectId)?.color ?? '#55a6ff',
   kind,
-  terminalTitle: `${emoji} ${name}`,
+  terminalTitle: name,
   terminalApp: 'auto',
   tmuxSession: id,
   command: '',
   cwd: `/home/user/Projects/${projectId}`,
+  note: order % 2 === 0 ? 'Keep changes focused and verify the result before handoff.' : '',
+  goal: order % 2 === 0 ? 'Ship the current project milestone with all checks passing' : '',
   matchPattern: '',
   logPath: '',
   autoStart: true,
@@ -61,14 +67,16 @@ const seed = (
 
 previewState.agents = [
   seed('product-planner', 'product', 'Product Planner', '◇', '#55a6ff', 'codex', 0),
-  seed('prototype-backend', 'product', 'Prototype Backend', '⬡', '#a478ff', 'backend', 1),
+  seed('product-researcher', 'product', 'Product Researcher', '◇', '#55a6ff', 'codex', 1),
+  seed('product-reviewer', 'product', 'Product Reviewer', '◇', '#55a6ff', 'codex', 2),
+  seed('release-agent', 'product', 'Release Agent', '◇', '#55a6ff', 'codex', 3),
   seed('sales-assistant', 'sales', 'Sales Assistant', '↗', '#54c79b', 'codex', 0),
   seed('crm-sync', 'sales', 'CRM Sync', '◉', '#f6b94b', 'worker', 1),
   seed('operations-agent', 'management', 'Operations Agent', '◆', '#a478ff', 'codex', 0),
   seed('reporting-dashboard', 'management', 'Reporting Dashboard', '▰', '#f6b94b', 'backend', 1),
 ]
 
-const previewStatuses: AgentStatus[] = ['thinking', 'waiting', 'running', 'running', 'idle', 'finished', 'error']
+const previewStatuses: AgentStatus[] = ['thinking', 'waiting', 'running', 'finished', 'idle', 'running', 'error', 'finished']
 
 function createPreviewUpdateState(): UpdateState {
   const previewPhase = typeof window === 'undefined'
@@ -78,14 +86,14 @@ function createPreviewUpdateState(): UpdateState {
   if (previewPhase === 'available') {
     return {
       phase: 'available',
-      currentVersion: '0.4.0',
-      availableVersion: '0.4.1',
-      releaseName: 'Agent Console v0.4.1',
+      currentVersion: '0.5.6',
+      availableVersion: '0.5.7',
+      releaseName: 'Agent Console v0.5.7',
       releaseNotes: '• Improves Agent discovery on Linux Mint.\n• Adds clearer update diagnostics.\n• Keeps all existing Project and Agent data.',
       releaseDate: '2026-08-05T00:00:00.000Z',
       progress: null,
       lastCheckedAt: '2026-08-05T00:00:00.000Z',
-      message: 'Agent Console v0.4.1 is available.',
+      message: 'Agent Console v0.5.7 is available.',
       installationKind: 'appimage',
       canCheck: true,
       canDownload: true,
@@ -95,7 +103,7 @@ function createPreviewUpdateState(): UpdateState {
 
   return {
     phase: 'disabled',
-    currentVersion: '0.4.0-preview',
+    currentVersion: '0.5.7-preview',
     availableVersion: null,
     releaseName: null,
     releaseNotes: null,
@@ -113,8 +121,8 @@ function createPreviewUpdateState(): UpdateState {
 const previewUpdateState = createPreviewUpdateState()
 
 const previewCoreHealth: CoreHealth = {
-  appVersion: '0.4.0-preview',
-  protocolVersion: 1,
+  appVersion: '0.5.7-preview',
+  protocolVersion: CORE_PROTOCOL_VERSION,
   startedAt: new Date().toISOString(),
   pid: 0,
   transport: 'unix',
@@ -181,6 +189,13 @@ function runtimeAgent(agent: AgentConfig, index: number): RuntimeAgent {
     processName: agent.kind === 'codex' ? 'codex' : agent.kind === 'backend' ? 'node' : 'python3',
     processState: status === 'thinking' || status === 'running' ? 'R+' : 'S+',
     terminalOpen: index < 4,
+    codexSession: agent.kind === 'codex' ? {
+      createdAt: new Date(Date.now() - (index + 1) * 3_600_000).toISOString(),
+      firstPrompt: ['Review the product roadmap and identify the most important next step', 'Research the strongest implementation options for this feature', 'Audit the current product changes and list concrete regressions', 'Prepare a verified desktop release for installation', 'Prepare today’s sales follow-up plan', 'Summarize this week’s operational risks'][index] ?? 'Review this project',
+      latestPrompt: ['Implement the selected roadmap improvements and verify the desktop build', 'Compare the latest findings and recommend one direction', 'Run the final checks and report only actionable issues', 'Build the deb package and verify its metadata and contents', 'Turn the latest customer notes into concrete follow-up actions', 'Check whether all operating tasks finished successfully'][index] ?? 'Check the latest work',
+      lastCompletedResponse: ['Build verification completed and the requested updates are ready', 'The research comparison is complete with one recommended approach', 'The review completed with no blocking regressions remaining', 'The release package passed metadata and content verification', 'Sales briefing and follow-up list have been prepared', 'All checks completed; two items remain for review'][index] ?? 'Task completed',
+      goal: index === 0 ? 'Complete the product roadmap and keep every validation check green' : '',
+    } : null,
   }
 }
 
@@ -208,26 +223,7 @@ function previewSnapshot(): RuntimeSnapshot {
         terminalTitle: '◆ Product Roadmap Codex',
         lastOutput: 'Reordering roadmap items by impact and effort…',
         status: 'thinking',
-      },
-      {
-        id: 'process-5120',
-        name: 'Backend · sales-dashboard',
-        suggestedName: 'Sales Dashboard Backend',
-        emoji: '⬡',
-        color: '#a478ff',
-        kind: 'backend',
-        pid: 5_120,
-        ppid: 1,
-        cpu: 1.2,
-        memory: 1.6,
-        runtimeSeconds: 18_420,
-        command: 'node',
-        args: 'npm run dev',
-        cwd: '/home/user/Projects/sales-dashboard',
-        tmuxSession: '',
-        terminalTitle: '⬡ Sales Dashboard Backend',
-        lastOutput: 'Ready in 812ms',
-        status: 'running',
+        keywords: ['product-roadmap', 'roadmap', '产品规划'],
       },
     ],
     capabilities: {
@@ -248,7 +244,7 @@ const previewApi: AgentConsoleApi = {
     state: previewState,
     stateRevision: previewStateRevision,
     snapshot: previewSnapshot(),
-    appVersion: '0.4.0-preview',
+    appVersion: '0.5.7-preview',
     updateState: previewUpdateState,
     stateNotice: null,
     core: previewCoreHealth,
@@ -259,6 +255,7 @@ const previewApi: AgentConsoleApi = {
   },
   stateBarrier: async () => 0,
   refresh: async () => previewSnapshot(),
+  focusDiscoveredProcess: async () => ({ ok: true, action: 'focused', message: 'Terminal focused (preview)' }),
   setZoomFactor: async () => undefined,
   openAgent: async () => ({ ok: true, action: 'focused', message: 'Terminal focused (preview)' }),
   closeAgentTerminal: async () => ({ ok: true, action: 'closed', message: 'Terminal closed (preview)' }),

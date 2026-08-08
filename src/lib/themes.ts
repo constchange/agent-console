@@ -138,6 +138,30 @@ export const THEMES: ThemeDefinition[] = [
     mode: 'light',
     swatches: ['#f2efe5', '#e4e3d4', '#2d4432', '#a67447'],
   },
+  {
+    id: 'vscode-dark',
+    name: 'VS Code Dark',
+    origin: 'VS Code · Dark',
+    description: 'A restrained workbench built from familiar editor charcoal, blue, and cool gray.',
+    mode: 'dark',
+    swatches: ['#1e1e1e', '#252526', '#007acc', '#d4d4d4'],
+  },
+  {
+    id: 'vscode-light',
+    name: 'VS Code Light',
+    origin: 'VS Code · Light',
+    description: 'A clean editor-white workspace with crisp dividers and the familiar VS Code blue.',
+    mode: 'light',
+    swatches: ['#f3f3f3', '#ffffff', '#005fb8', '#1f1f1f'],
+  },
+  {
+    id: 'monochrome',
+    name: 'Pure Monochrome',
+    origin: 'Black · White',
+    description: 'A strict black-and-white interface with hierarchy carried only by line, weight, and space.',
+    mode: 'light',
+    swatches: ['#ffffff', '#ffffff', '#000000', '#000000'],
+  },
 ]
 
 export const DEFAULT_THEME = THEMES[0]

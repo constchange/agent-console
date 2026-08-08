@@ -10,9 +10,17 @@ describe('remote-safe projection', () => {
         id: 'agent-1', projectId: 'project-1', name: 'Agent', emoji: '◆', color: '#55a6ff', kind: 'codex',
         terminalTitle: 'private', terminalApp: 'auto', tmuxSession: 'secret-pane', command: 'codex --secret',
         cwd: '/home/user/private', matchPattern: 'secret', logPath: '/home/user/private.log', autoStart: true,
+        note: 'private note', goal: 'private manual goal',
         order: 0, pid: 1234, statusOverride: null, cpu: 1, memory: 2, runtimeSeconds: 3, status: 'waiting',
         lastUpdated: '2026-08-06T20:00:00.000Z', lastOutput: 'private output', processName: 'codex',
         processState: 'S+', terminalOpen: true,
+        codexSession: {
+          createdAt: '2026-08-06T19:00:00.000Z',
+          goal: 'private live goal',
+          firstPrompt: 'private first prompt',
+          latestPrompt: 'private latest prompt',
+          lastCompletedResponse: 'private completed response',
+        },
       }],
       discovered: [],
       capabilities: { platform: 'linux', terminals: [], tmux: true, wmctrl: false, xdotool: false, docker: false, homeDirectory: '/home/user' },
@@ -31,7 +39,7 @@ describe('remote-safe projection', () => {
       task: { id: 'task-1', version: 4 },
     })
     const json = JSON.stringify(safe)
-    for (const secret of ['command', 'cwd', 'logPath', 'matchPattern', 'pid', 'tmuxSession', 'private output', 'secret-pane']) {
+    for (const secret of ['command', 'cwd', 'logPath', 'matchPattern', 'pid', 'tmuxSession', 'private output', 'secret-pane', 'private note', 'private manual goal', 'private live goal', 'private first prompt', 'private latest prompt', 'private completed response']) {
       expect(json).not.toContain(secret)
     }
   })

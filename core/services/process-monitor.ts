@@ -4,7 +4,6 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import type {
   AgentConfig,
-  AgentKind,
   ConsoleState,
   DiscoveredItem,
   ProcessInfo,
@@ -13,6 +12,7 @@ import type {
   TmuxPaneInfo,
 } from '../../shared/types'
 import { classifyProcess, inferStatus, suggestedPresentation } from './classification'
+import { CodexSessionInspector } from './codex-session-inspector'
 import { SystemManager } from './system-manager'
 
 const execFileAsync = promisify(execFile)
@@ -47,7 +47,7 @@ export function parsePsOutput(output: string): ProcessInfo[] {
       command,
       args: args || command,
       cwd: '',
-      kind: classifyProcess(command, args || command),
+      kind: classifyProcess(command, args || command, tty),
     })
   }
   return processes
@@ -191,11 +191,16 @@ function findAgentProcess(
 }
 
 function isPotentialMatch(processInfo: ProcessInfo, state: ConsoleState): boolean {
-  if (processInfo.kind) return true
+  if (processInfo.kind === 'codex') return true
   return state.agents.some((agent) => {
     if (agent.pid === processInfo.pid) return true
     const matcher = safeRegex(agent.matchPattern)
-    return matcher?.test(`${processInfo.command} ${processInfo.args}`) ?? false
+    if (matcher?.test(`${processInfo.command} ${processInfo.args}`)) return true
+    const token = commandToken(agent.command)
+    return Boolean(
+      (agent.kind === 'process' || processInfo.kind === agent.kind)
+      && (!token || path.basename(processInfo.command) === token),
+    )
   })
 }
 
@@ -268,53 +273,52 @@ function displayName(processInfo: ProcessInfo): string {
       return location ? `Python · ${location}` : 'Python'
     case 'node':
       return location ? `Node · ${location}` : 'Node'
-    case 'terminal':
-      return processInfo.command
+    case 'terminal': {
+      const command = path.basename(processInfo.command) || 'Terminal'
+      return location ? `${command} · ${location}` : command
+    }
+    case 'process': {
+      const command = path.basename(processInfo.command) || `Process ${processInfo.pid}`
+      return location ? `${command} · ${location}` : command
+    }
     default:
       return processInfo.command || `Process ${processInfo.pid}`
   }
 }
 
-async function listDockerContainers(enabled: boolean): Promise<DiscoveredItem[]> {
-  if (!enabled) return []
-  try {
-    const { stdout } = await execFileAsync(
-      'docker',
-      ['ps', '--format', '{{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Image}}'],
-      { timeout: 2_500, maxBuffer: 1_000_000 },
-    )
-    const presentation = suggestedPresentation('docker')
-    return stdout
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => {
-        const [containerId, name, status, image] = line.split('\t')
-        return {
-          id: `docker-${containerId}`,
-          name,
-          suggestedName: name,
-          ...presentation,
-          kind: 'docker' as const,
-          pid: null,
-          ppid: null,
-          cpu: 0,
-          memory: 0,
-          runtimeSeconds: 0,
-          command: image,
-          args: image,
-          cwd: '',
-          tmuxSession: '',
-          terminalTitle: `▣ ${name}`,
-          lastOutput: status,
-          status: 'running' as const,
-        }
-      })
-  } catch {
-    return []
+const KEYWORD_STOPWORDS = new Set([
+  'agent', 'console', 'terminal', 'process', 'command', 'bash', 'zsh', 'fish', 'shell',
+  'node', 'python', 'codex', 'tmux', 'usr', 'bin', 'home', 'opt', 'local', 'dev',
+  'run', 'start', 'serve', 'main', 'index', 'true', 'false', 'null', 'undefined',
+  'the', 'and', 'for', 'with', 'from', 'this', 'that', 'ready', 'waiting', 'running',
+])
+
+export function extractProcessKeywords(...values: Array<string | null | undefined>): string[] {
+  const keywords: string[] = []
+  const seen = new Set<string>()
+  const add = (candidate: string) => {
+    const clean = candidate.replace(/^[-_.]+|[-_.]+$/g, '').slice(0, 32)
+    const normalized = clean.toLocaleLowerCase()
+    if (clean.length < 2 || /^\d+$/.test(clean) || KEYWORD_STOPWORDS.has(normalized) || seen.has(normalized)) return
+    seen.add(normalized)
+    keywords.push(clean)
   }
+
+  for (const value of values) {
+    if (!value || keywords.length >= 8) continue
+    const tokens = value.match(/[\p{Script=Han}]{2,16}|[\p{L}][\p{L}\p{N}._-]{1,31}/gu) ?? []
+    for (const token of tokens) {
+      add(token)
+      if (/[-_.]/.test(token)) {
+        for (const part of token.split(/[-_.]+/)) add(part)
+      }
+      if (keywords.length >= 8) break
+    }
+  }
+  return keywords.slice(0, 8)
 }
 
-function buildDiscovered(
+export function buildDiscovered(
   processes: ProcessInfo[],
   panes: TmuxPaneInfo[],
   configuredAgents: RuntimeAgent[],
@@ -326,20 +330,21 @@ function buildDiscovered(
 
   for (const pane of panes) {
     const processInfo = bestPaneProcess(pane, processes)
+    const isCodex = processInfo?.kind === 'codex' || pane.currentCommand.toLocaleLowerCase() === 'codex'
+    if (!isCodex) continue
     if (processInfo) {
       paneProcessPids.add(processInfo.pid)
       for (const descendant of processDescendants(pane.panePid, processes)) paneProcessPids.add(descendant.pid)
     }
     if (configuredSessions.has(pane.session)) continue
-    const kind: AgentKind = processInfo?.kind ?? (pane.currentCommand === 'codex' ? 'codex' : 'tmux')
-    const presentation = suggestedPresentation(kind)
-    const name = kind === 'codex' ? `Codex · ${pane.session}` : `${pane.session} · ${pane.window}`
+    const presentation = suggestedPresentation('codex')
+    const name = `Codex · ${pane.session}`
     discovered.push({
       id: `tmux-${pane.session}-${pane.paneId.replace('%', '')}`,
       name,
       suggestedName: name,
       ...presentation,
-      kind,
+      kind: 'codex',
       pid: processInfo?.pid ?? pane.panePid,
       ppid: processInfo?.ppid ?? null,
       cpu: processInfo?.cpu ?? 0,
@@ -351,12 +356,20 @@ function buildDiscovered(
       tmuxSession: pane.session,
       terminalTitle: `${presentation.emoji} ${name}`,
       lastOutput: lastMeaningfulLine(pane.lastOutput),
-      status: inferStatus(processInfo, pane.lastOutput, kind, null, pane.activityAt),
+      status: inferStatus(processInfo, pane.lastOutput, 'codex', null, pane.activityAt),
+      keywords: extractProcessKeywords(
+        path.basename(pane.cwd || processInfo?.cwd || ''),
+        pane.session,
+        pane.window,
+        lastMeaningfulLine(pane.lastOutput),
+        processInfo?.command,
+        processInfo?.args,
+      ),
     })
   }
 
   for (const processInfo of processes) {
-    if (!processInfo.kind || configuredPids.has(processInfo.pid) || paneProcessPids.has(processInfo.pid)) continue
+    if (processInfo.kind !== 'codex' || configuredPids.has(processInfo.pid) || paneProcessPids.has(processInfo.pid)) continue
     const presentation = suggestedPresentation(processInfo.kind)
     const name = displayName(processInfo)
     discovered.push({
@@ -377,28 +390,21 @@ function buildDiscovered(
       terminalTitle: `${presentation.emoji} ${name}`,
       lastOutput: processInfo.args.slice(-500),
       status: inferStatus(processInfo, '', processInfo.kind),
+      keywords: extractProcessKeywords(
+        path.basename(processInfo.cwd),
+        processInfo.command,
+        processInfo.args,
+      ),
     })
   }
-  return discovered.sort((a, b) => {
-    const rank: Record<AgentKind, number> = {
-      codex: 0,
-      backend: 1,
-      worker: 2,
-      tmux: 3,
-      python: 4,
-      node: 5,
-      docker: 6,
-      terminal: 7,
-      process: 8,
-    }
-    return rank[a.kind] - rank[b.kind] || b.cpu - a.cpu
-  })
+  return discovered.sort((a, b) => b.cpu - a.cpu)
 }
 
 async function buildRuntimeAgents(
   state: ConsoleState,
   processes: ProcessInfo[],
   panes: TmuxPaneInfo[],
+  codexSessions: CodexSessionInspector,
 ): Promise<RuntimeAgent[]> {
   const capturedAt = new Date().toISOString()
   return Promise.all(
@@ -406,18 +412,29 @@ async function buildRuntimeAgents(
       const { processInfo, pane } = findAgentProcess(agent, processes, panes)
       const logOutput = await readFileTail(agent.logPath)
       const rawOutput = logOutput || pane?.lastOutput || ''
+      const codexRuntime = agent.kind === 'codex' && processInfo
+        ? await codexSessions.inspectRuntime(processInfo.pid)
+        : null
       return {
         ...agent,
         pid: processInfo?.pid ?? agent.pid ?? null,
         cpu: processInfo?.cpu ?? 0,
         memory: processInfo?.memory ?? 0,
         runtimeSeconds: processInfo?.runtimeSeconds ?? 0,
-        status: inferStatus(processInfo, rawOutput, agent.kind, agent.statusOverride, pane?.activityAt),
+        status: inferStatus(
+          processInfo,
+          rawOutput,
+          agent.kind,
+          agent.statusOverride,
+          pane?.activityAt,
+          codexRuntime?.taskActive ?? null,
+        ),
         lastUpdated: capturedAt,
         lastOutput: lastMeaningfulLine(rawOutput) || (processInfo ? processInfo.args.slice(-500) : 'No live process matched'),
         processName: processInfo?.command ?? '',
         processState: processInfo?.processState ?? '',
         terminalOpen: false,
+        codexSession: codexRuntime?.summary ?? null,
       }
     }),
   )
@@ -430,6 +447,7 @@ export class ProcessMonitor {
   private rescanWithDiscovery = false
   private activeClients = 0
   private snapshot: RuntimeSnapshot | null = null
+  private readonly codexSessions = new CodexSessionInspector()
   private readonly listeners = new Set<(snapshot: RuntimeSnapshot) => void>()
 
   constructor(
@@ -514,12 +532,9 @@ export class ProcessMonitor {
       scanError = error instanceof Error ? error.message : String(error)
     }
     const configuredSessions = new Set(state.agents.map((agent) => agent.tmuxSession).filter(Boolean))
-    const [panes, dockerItems] = await Promise.all([
-      listTmuxPanes(capabilities.tmux, includeDiscovery ? null : configuredSessions),
-      includeDiscovery ? listDockerContainers(capabilities.docker) : Promise.resolve([]),
-    ])
-    const agents = await buildRuntimeAgents(state, processes, panes)
-    const discovered = includeDiscovery ? [...buildDiscovered(processes, panes, agents), ...dockerItems] : []
+    const panes = await listTmuxPanes(capabilities.tmux, includeDiscovery ? null : configuredSessions)
+    const agents = await buildRuntimeAgents(state, processes, panes, this.codexSessions)
+    const discovered = includeDiscovery ? buildDiscovered(processes, panes, agents) : []
     return {
       capturedAt: new Date().toISOString(),
       agents,

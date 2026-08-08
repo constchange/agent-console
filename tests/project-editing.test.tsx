@@ -6,6 +6,7 @@ import { Sidebar } from '../src/components/Sidebar'
 
 const project = {
   id: 'test-project',
+  groupId: 'workspace',
   name: 'Test Project',
   emoji: '◇',
   color: '#55a6ff',
@@ -15,6 +16,7 @@ const project = {
 
 const state: ConsoleState = {
   version: 1,
+  groups: [{ id: 'workspace', name: 'Workspace', collapsed: false, order: 0 }],
   projects: [project],
   agents: [],
   settings: {
@@ -53,12 +55,17 @@ describe('project editing entry points', () => {
         search=""
         onSearch={vi.fn()}
         onSelectProject={vi.fn()}
+        onToggleGroup={vi.fn()}
         onToggleProject={vi.fn()}
+        onAddGroup={vi.fn()}
+        onEditGroup={vi.fn()}
         onAddProject={vi.fn()}
         onEditProject={vi.fn()}
         onAddAgent={vi.fn()}
         onEditAgent={vi.fn()}
         onOpenAgent={vi.fn()}
+        onReorderGroup={vi.fn()}
+        onReorderProject={vi.fn()}
         onReorderAgent={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
@@ -78,6 +85,7 @@ describe('project editing entry points', () => {
         onOpenAgent={vi.fn()}
         onCloseTerminal={vi.fn()}
         onEditAgent={vi.fn()}
+        onDeleteAgent={vi.fn()}
         onEditProject={vi.fn()}
         onAddAgent={vi.fn()}
         onRestoreProject={vi.fn()}

@@ -68,6 +68,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
+export interface CoreProtocolMismatch {
+  supportedVersion: number | null
+}
+
+export function readCoreProtocolMismatch(error: unknown): CoreProtocolMismatch | null {
+  if (!(error instanceof CoreRemoteError) || error.code !== CORE_RPC_ERROR.PROTOCOL_VERSION_MISMATCH) return null
+  const supportedVersion = isRecord(error.data) && Number.isInteger(error.data.supportedVersion)
+    ? Number(error.data.supportedVersion)
+    : null
+  return { supportedVersion }
+}
+
 export class CoreClient {
   private readonly options: Required<Pick<CoreClientOptions, 'clientName' | 'protocolVersion' | 'requestTimeoutMs'>> & CoreClientOptions
   private socket: net.Socket | null = null

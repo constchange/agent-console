@@ -18,8 +18,12 @@ function namedState(name: string): ConsoleState {
 describe('state sanitization', () => {
   it('creates neutral Product, Sales, and Management examples', () => {
     const state = createDefaultState()
+    expect(state.groups).toEqual([{ id: 'workspace', name: 'Workspace', collapsed: false, order: 0 }])
+    expect(state.projects.every((project) => project.groupId === 'workspace')).toBe(true)
     expect(state.projects.map((project) => project.name)).toEqual(['Product', 'Sales', 'Management'])
     expect(state.agents).toHaveLength(6)
+    expect(state.agents.every((agent) => agent.autoStart && agent.emoji === '')).toBe(true)
+    expect(state.agents.every((agent) => agent.color === state.projects.find((project) => project.id === agent.projectId)?.color)).toBe(true)
     expect(state.settings.language).toBe('en')
     expect(state.settings.fontSizePx).toBe(25)
     expect(state.settings.theme).toBe('navy-gold')
@@ -81,7 +85,38 @@ describe('state sanitization', () => {
       },
     }, 'zh-CN')
     expect(state.projects[0].name).toBe('Existing Project')
+    expect(state.groups).toEqual([{ id: 'workspace', name: '工作区', collapsed: false, order: 0 }])
+    expect(state.projects[0].groupId).toBe('workspace')
     expect(state.settings.language).toBe('zh-CN')
+  })
+
+  it('defaults new legacy Agents to workspace restore while preserving an explicit opt-out', () => {
+    const state = sanitizeState({
+      projects: [{ id: 'project', name: 'Project', color: '#54c79b' }],
+      agents: [
+        { id: 'default-restore', projectId: 'project', name: 'Default', color: '#ef6f7a', emoji: '◆' },
+        { id: 'opted-out', projectId: 'project', name: 'Opted out', autoStart: false },
+      ],
+      settings: {},
+    })
+    expect(state.agents[0]).toMatchObject({ autoStart: true, emoji: '', color: '#54c79b', note: '', goal: '' })
+    expect(state.agents[1].autoStart).toBe(false)
+  })
+
+  it('preserves Agent notes and manual goals while bounding both local fields', () => {
+    const state = sanitizeState({
+      projects: [{ id: 'project', name: 'Project' }],
+      agents: [{
+        id: 'agent', projectId: 'project', name: 'Agent',
+        note: `note-${'n'.repeat(5_000)}`,
+        goal: `goal-${'g'.repeat(5_000)}`,
+      }],
+      settings: {},
+    })
+    expect(state.agents[0].note).toHaveLength(4_000)
+    expect(state.agents[0].goal).toHaveLength(4_000)
+    expect(state.agents[0].note).toMatch(/^note-/)
+    expect(state.agents[0].goal).toMatch(/^goal-/)
   })
 })
 

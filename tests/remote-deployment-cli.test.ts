@@ -57,7 +57,7 @@ afterEach(() => {
 describe('Remote deployment CLI', () => {
   it('packages a discoverable deb command with bounded install/remove hooks', () => {
     const packageJson = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'))
-    expect(packageJson.version).toBe('0.5.3')
+    expect(packageJson.version).toBe('0.5.7')
     expect(packageJson.build.deb).toMatchObject({
       depends: expect.arrayContaining(['wmctrl', 'libgtk-3-0', 'libnss3', 'xdg-utils', 'libsecret-1-0']),
       afterInstall: 'resources/remote/deb/after-install.tpl',
