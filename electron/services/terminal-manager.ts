@@ -7,6 +7,7 @@ import type {
   ActionResult,
   AgentConfig,
   ConsoleSettings,
+  DiscoveredItem,
   SystemCapabilities,
   TerminalApp,
 } from '../../shared/types'
@@ -44,6 +45,24 @@ export interface DesktopWindowRecord {
   id: string
   pid: number | null
   title: string
+}
+
+export interface ExternalWindowBounds {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export function centeredWindowBounds(workArea: ExternalWindowBounds): ExternalWindowBounds {
+  const width = Math.floor(workArea.width * 3 / 5)
+  const height = Math.floor(workArea.height * 3 / 5)
+  return {
+    width,
+    height,
+    x: workArea.x + Math.floor((workArea.width - width) / 2),
+    y: workArea.y + Math.floor((workArea.height - height) / 2),
+  }
 }
 
 const defaultDependencies: TerminalManagerDependencies = {
@@ -178,10 +197,10 @@ export class TerminalManager {
     return new Set(agents.filter((agent) => this.knownOpenAgents.has(agent.id)).map((agent) => agent.id))
   }
 
-  async open(agent: AgentConfig): Promise<ActionResult> {
+  async open(agent: AgentConfig, bounds?: ExternalWindowBounds): Promise<ActionResult> {
     const title = windowTitle(agent)
     await this.applyTitleToExistingTerminal(agent, title)
-    if (await this.focus(agent, title)) {
+    if (await this.focus(agent, title, bounds)) {
       this.knownOpenAgents.set(agent.id, title)
       return { ok: true, action: 'focused', message: `${agent.name} terminal focused` }
     }
@@ -224,6 +243,10 @@ export class TerminalManager {
       const { executable, args } = this.terminalInvocation(terminal, title, terminalCommand)
       this.dependencies.spawnDetached(executable, args)
       this.knownOpenAgents.set(agent.id, title)
+      if (bounds) {
+        await this.dependencies.delay(120)
+        await this.focus(agent, title, bounds, 20)
+      }
       return { ok: true, action: 'opened', message: `${agent.name} opened in ${terminal}` }
     } catch (error) {
       return { ok: false, action: 'error', message: error instanceof Error ? error.message : String(error) }
@@ -259,6 +282,43 @@ export class TerminalManager {
     } catch {
       this.forgetWindow(agent.id)
       return { ok: false, action: 'not-found', message: `${agent.name} terminal window was not found` }
+    }
+  }
+
+  async focusDiscovered(item: DiscoveredItem, bounds: ExternalWindowBounds): Promise<ActionResult> {
+    if (!item.pid || !this.isProcessAlive(item.pid)) {
+      return { ok: false, action: 'not-found', message: 'This discovered process is no longer running.' }
+    }
+    const transientAgent: AgentConfig = {
+      id: `discovery-${item.id}-${item.pid}`,
+      projectId: '',
+      name: item.name,
+      emoji: '',
+      color: item.color,
+      kind: item.kind,
+      terminalTitle: item.terminalTitle,
+      terminalApp: 'auto',
+      tmuxSession: item.tmuxSession,
+      command: '',
+      cwd: item.cwd,
+      note: '',
+      goal: '',
+      matchPattern: '',
+      logPath: '',
+      autoStart: false,
+      order: 0,
+      pid: item.pid,
+      statusOverride: null,
+    }
+    const title = `Agent Console · Discover · ${terminalWindowIdentity(transientAgent.id)}`
+    await this.applyTitleToExistingTerminal(transientAgent, title)
+    if (await this.focus(transientAgent, title, bounds, 12)) {
+      return { ok: true, action: 'focused', message: 'Discovered process window focused.' }
+    }
+    return {
+      ok: false,
+      action: 'focus-unavailable',
+      message: 'The process is running, but its exact desktop window could not be focused.',
     }
   }
 
@@ -301,12 +361,26 @@ export class TerminalManager {
     }
   }
 
-  private async focus(agent: AgentConfig, title: string): Promise<boolean> {
+  private async focus(
+    agent: AgentConfig,
+    title: string,
+    bounds?: ExternalWindowBounds,
+    attempts = 5,
+  ): Promise<boolean> {
     const capabilities = await this.getCapabilities()
     if (capabilities.wmctrl) {
       try {
-        const target = await this.findWmctrlWindow(agent, title, 5)
+        const target = await this.findWmctrlWindow(agent, title, attempts)
         if (target) {
+          if (bounds) {
+            await this.dependencies.execFile('wmctrl', ['-i', '-r', target.id, '-b', 'remove,maximized_vert,maximized_horz'], { timeout: 1_500 })
+            await this.dependencies.execFile('wmctrl', ['-i', '-r', target.id, '-b', 'remove,fullscreen'], { timeout: 1_500 })
+            await this.dependencies.execFile(
+              'wmctrl',
+              ['-i', '-r', target.id, '-e', `0,${bounds.x},${bounds.y},${bounds.width},${bounds.height}`],
+              { timeout: 1_500 },
+            )
+          }
           await this.dependencies.execFile('wmctrl', ['-i', '-a', target.id], { timeout: 1_500 })
           this.windowIdByAgent.set(agent.id, target.id)
           return true
@@ -319,6 +393,10 @@ export class TerminalManager {
       try {
         const id = await this.findXdotoolWindow(agent, title)
         if (!id) return false
+        if (bounds) {
+          await this.dependencies.execFile('xdotool', ['windowsize', id, String(bounds.width), String(bounds.height)], { timeout: 1_500 })
+          await this.dependencies.execFile('xdotool', ['windowmove', id, String(bounds.x), String(bounds.y)], { timeout: 1_500 })
+        }
         await this.dependencies.execFile('xdotool', ['windowactivate', '--sync', id], { timeout: 1_500 })
         this.windowIdByAgent.set(agent.id, id)
         return true

@@ -8,6 +8,7 @@ import {
   ipcMain,
   Menu,
   safeStorage,
+  screen,
   shell,
   type IpcMainInvokeEvent,
 } from 'electron'
@@ -30,12 +31,13 @@ import {
 import type { RemoteSettingsState } from '../shared/remote-settings'
 import type {
   ActionResult,
+  AgentWindowPresentation,
   ConsoleState,
   CoreConnectionState,
   CoreHealth,
   RuntimeSnapshot,
 } from '../shared/types'
-import { CoreClient } from './services/core-client'
+import { CoreClient, readCoreProtocolMismatch } from './services/core-client'
 import { CoreServiceManager, type CoreServiceState } from './services/core-service-manager'
 import { drainForShutdown } from './services/shutdown-drain'
 import { authCallbackFromArguments, validateAuthCallbackUrl } from './services/auth-callback'
@@ -44,7 +46,7 @@ import { startRemoteGatewayRuntime, type RemoteGatewayRuntime } from './services
 import { assertRemoteIpcInvocation } from './services/remote-ipc-policy'
 import { readRemoteServicePrivatePaths } from './services/remote-service-config'
 import { RemoteServiceManager } from './services/remote-service-manager'
-import { TerminalManager } from './services/terminal-manager'
+import { centeredWindowBounds, TerminalManager } from './services/terminal-manager'
 import { UpdateManager } from './services/update-manager'
 
 const CORE_MODE_ARGUMENT = '--console-core'
@@ -86,6 +88,7 @@ let terminals: TerminalManager
 let updates: UpdateManager
 let coreClient: CoreClient
 let coreService: CoreServiceManager
+let coreServiceState: CoreServiceState | null = null
 let coreHealth: CoreHealth | null = null
 let coreStateRevision = ''
 let coreStateGeneration = 0
@@ -298,6 +301,23 @@ async function connectToCore(initial: boolean): Promise<CoreBootstrapResult> {
     } catch (error) {
       lastError = error
       coreClient.disconnect()
+      const protocolMismatch = readCoreProtocolMismatch(error)
+      if (protocolMismatch && !restartedForVersion && coreServiceState?.mode === 'systemd-user') {
+        restartedForVersion = true
+        publishCoreConnection({
+          phase: 'incompatible',
+          message: `Desktop v${app.getVersion()} and the running Core use different protocols. Restarting Core safely…`,
+          coreVersion: null,
+          protocolVersion: protocolMismatch.supportedVersion,
+        })
+        try {
+          await coreService.restart()
+          await new Promise((resolve) => setTimeout(resolve, 500))
+          continue
+        } catch (restartError) {
+          lastError = restartError
+        }
+      }
       if (!initial && !recoveryStarted) {
         recoveryStarted = true
         await coreService.ensureRunning(coreHealth?.pid).catch((serviceError) => {
@@ -381,17 +401,41 @@ function registerIpc(): void {
     await coreClient.request<RuntimeSnapshot>('runtime.refresh', undefined, 15_000),
   ))
 
+  ipcMain.handle('discovery:focus', async (_event, discoveredId: unknown) => {
+    if (typeof discoveredId !== 'string' || discoveredId.length < 1 || discoveredId.length > 200) {
+      throw new Error('A valid discovered process identifier is required.')
+    }
+    const snapshot = await coreClient.request<RuntimeSnapshot>('runtime.refresh', undefined, 15_000)
+    const item = snapshot.discovered.find((candidate) => candidate.id === discoveredId)
+    if (!item) {
+      return {
+        ok: false,
+        action: 'not-found',
+        message: 'This discovered process is no longer running.',
+      }
+    }
+    const display = screen.getDisplayMatching(
+      mainWindow && !mainWindow.isDestroyed() ? mainWindow.getBounds() : screen.getPrimaryDisplay().bounds,
+    )
+    return terminals.focusDiscovered(item, centeredWindowBounds(display.workArea))
+  })
+
   ipcMain.handle('ui:set-zoom-factor', (event, value: unknown) => {
     const requested = typeof value === 'number' && Number.isFinite(value) ? value : 1
     const factor = Math.min(50 / 13, Math.max(5 / 13, requested))
     event.sender.setZoomFactor(factor)
   })
 
-  ipcMain.handle('agent:open', async (_event, agentId: unknown) => {
+  ipcMain.handle('agent:open', async (_event, agentId: unknown, requestedPresentation: unknown) => {
     if (typeof agentId !== 'string') return { ok: false, action: 'invalid', message: 'Invalid Agent ID' }
+    const presentation: AgentWindowPresentation = requestedPresentation === 'centered' ? 'centered' : 'default'
     const prepared = await coreClient.request<CorePreparedAgent>('terminal.open', { agentId }, 15_000)
     if (!prepared.preparation.ok) return prepared.preparation
-    const result = await terminals.open({ ...prepared.agent, pid: prepared.runtimePid })
+    const display = presentation === 'centered'
+      ? screen.getDisplayMatching(mainWindow && !mainWindow.isDestroyed() ? mainWindow.getBounds() : screen.getPrimaryDisplay().bounds)
+      : null
+    const bounds = display ? centeredWindowBounds(display.workArea) : undefined
+    const result = await terminals.open({ ...prepared.agent, pid: prepared.runtimePid }, bounds)
     requestRuntimeRefresh(700)
     return result
   })
@@ -494,7 +538,7 @@ async function startDesktop(): Promise<void> {
   const userDataPath = app.getPath('userData')
   const paths = resolveCorePaths(userDataPath)
   coreService = new CoreServiceManager(userDataPath)
-  const coreServiceState = await coreService.installAndStart()
+  coreServiceState = await coreService.installAndStart()
   coreClient = new CoreClient({
     socketPath: paths.desktopSocketPath,
     channel: 'desktop',

@@ -56,12 +56,23 @@ export const THEME_IDS = [
   'arctic',
   'carnival',
   'forest-studio',
+  'vscode-dark',
+  'vscode-light',
+  'monochrome',
 ] as const
 
 export type ThemeId = typeof THEME_IDS[number]
 
+export interface ProjectGroup {
+  id: string
+  name: string
+  collapsed: boolean
+  order: number
+}
+
 export interface Project {
   id: string
+  groupId: string
   name: string
   emoji: string
   color: string
@@ -81,6 +92,8 @@ export interface AgentConfig {
   tmuxSession: string
   command: string
   cwd: string
+  note: string
+  goal: string
   matchPattern: string
   logPath: string
   autoStart: boolean
@@ -100,6 +113,7 @@ export interface ConsoleSettings {
 
 export interface ConsoleState {
   version: 1
+  groups: ProjectGroup[]
   projects: Project[]
   agents: AgentConfig[]
   settings: ConsoleSettings
@@ -117,6 +131,14 @@ export interface ProcessInfo {
   args: string
   cwd: string
   kind: AgentKind | null
+}
+
+export interface CodexSessionSummary {
+  createdAt: string | null
+  firstPrompt: string
+  latestPrompt: string
+  lastCompletedResponse: string
+  goal: string
 }
 
 export interface TmuxPaneInfo {
@@ -143,7 +165,10 @@ export interface RuntimeAgent extends AgentConfig {
   processName: string
   processState: string
   terminalOpen: boolean
+  codexSession: CodexSessionSummary | null
 }
+
+export type AgentWindowPresentation = 'default' | 'centered'
 
 export interface DiscoveredItem {
   id: string
@@ -164,6 +189,7 @@ export interface DiscoveredItem {
   terminalTitle: string
   lastOutput: string
   status: AgentStatus
+  keywords: string[]
 }
 
 export interface SystemCapabilities {
@@ -289,8 +315,9 @@ export interface AgentConsoleApi {
   saveState: (state: ConsoleState) => Promise<ConsoleState>
   stateBarrier: () => Promise<number>
   refresh: () => Promise<RuntimeSnapshot>
+  focusDiscoveredProcess: (discoveredId: string) => Promise<ActionResult>
   setZoomFactor: (factor: number) => Promise<void>
-  openAgent: (agentId: string) => Promise<ActionResult>
+  openAgent: (agentId: string, presentation?: AgentWindowPresentation) => Promise<ActionResult>
   closeAgentTerminal: (agentId: string) => Promise<ActionResult>
   restoreProject: (projectId: string) => Promise<ActionResult[]>
   onSnapshot: (callback: (snapshot: RuntimeSnapshot) => void) => () => void

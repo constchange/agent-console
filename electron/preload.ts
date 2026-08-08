@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
+  AgentWindowPresentation,
   AgentConsoleApi,
   ConsoleState,
   CoreConnectionState,
@@ -21,8 +22,9 @@ const api: AgentConsoleApi = {
   saveState: (state: ConsoleState) => ipcRenderer.invoke('state:save', state),
   stateBarrier: () => ipcRenderer.invoke('state:barrier'),
   refresh: () => ipcRenderer.invoke('runtime:refresh'),
+  focusDiscoveredProcess: (discoveredId: string) => ipcRenderer.invoke('discovery:focus', discoveredId),
   setZoomFactor: (factor: number) => ipcRenderer.invoke('ui:set-zoom-factor', factor),
-  openAgent: (agentId: string) => ipcRenderer.invoke('agent:open', agentId),
+  openAgent: (agentId: string, presentation: AgentWindowPresentation = 'default') => ipcRenderer.invoke('agent:open', agentId, presentation),
   closeAgentTerminal: (agentId: string) => ipcRenderer.invoke('agent:close-terminal', agentId),
   restoreProject: (projectId: string) => ipcRenderer.invoke('project:restore', projectId),
   onSnapshot: (callback: (snapshot: RuntimeSnapshot) => void) => {

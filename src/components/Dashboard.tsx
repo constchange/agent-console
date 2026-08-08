@@ -12,6 +12,7 @@ interface DashboardProps {
   onOpenAgent: (agentId: string) => void
   onCloseTerminal: (agentId: string) => void
   onEditAgent: (agent: AgentConfig) => void
+  onDeleteAgent: (agent: AgentConfig) => void
   onEditProject: (project: Project) => void
   onAddAgent: (projectId: string) => void
   onRestoreProject: (projectId: string) => void
@@ -35,6 +36,7 @@ export function Dashboard({
   onOpenAgent,
   onCloseTerminal,
   onEditAgent,
+  onDeleteAgent,
   onEditProject,
   onAddAgent,
   onRestoreProject,
@@ -42,9 +44,10 @@ export function Dashboard({
   const i18n = useI18n()
   const { t } = i18n
   const selectedProject = state.projects.find((project) => project.id === selectedProjectId)
+  const groupOrder = new Map(state.groups.map((group) => [group.id, group.order]))
   const visibleProjects = [...state.projects]
     .filter((project) => selectedProjectId === 'all' || project.id === selectedProjectId)
-    .sort((a, b) => a.order - b.order)
+    .sort((a, b) => (groupOrder.get(a.groupId) ?? 0) - (groupOrder.get(b.groupId) ?? 0) || a.order - b.order)
   const projectIds = new Set(visibleProjects.map((project) => project.id))
   const query = search.trim().toLowerCase()
   const visibleAgents = snapshot.agents.filter((agent) => {
@@ -129,6 +132,7 @@ export function Dashboard({
                     onOpen={() => onOpenAgent(agent.id)}
                     onCloseTerminal={() => onCloseTerminal(agent.id)}
                     onEdit={() => onEditAgent(agent)}
+                    onDelete={() => onDeleteAgent(agent)}
                   />
                 ))}
               </div>

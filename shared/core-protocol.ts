@@ -21,7 +21,7 @@ import type {
   RemoteEventStreamPollResult,
 } from './remote-validation'
 
-export const CORE_PROTOCOL_VERSION = 2
+export const CORE_PROTOCOL_VERSION = 5
 export const CORE_MAX_MESSAGE_BYTES = 1024 * 1024
 export const CORE_EVENT_NOTIFICATION = 'core.event' as const
 

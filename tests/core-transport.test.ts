@@ -11,6 +11,7 @@ import {
   CoreClientMessageTooLargeError,
   CoreClientTimeoutError,
   CoreRemoteError,
+  readCoreProtocolMismatch,
 } from '../electron/services/core-client'
 import {
   CORE_MAX_MESSAGE_BYTES,
@@ -134,9 +135,12 @@ describe('Unix-only Core transport', () => {
     if (!await supportsUnixSockets()) skip('Unix sockets are blocked by this execution sandbox.')
     const { socketPath } = await fixture()
     const incompatible = client(socketPath, { protocolVersion: CORE_PROTOCOL_VERSION + 1 })
-    await expect(incompatible.connect()).rejects.toMatchObject({
+    const mismatch = await incompatible.connect().catch((error: unknown) => error)
+    expect(mismatch).toMatchObject({
       code: CORE_RPC_ERROR.PROTOCOL_VERSION_MISMATCH,
     })
+    expect(readCoreProtocolMismatch(mismatch)).toEqual({ supportedVersion: CORE_PROTOCOL_VERSION })
+    expect(readCoreProtocolMismatch(new Error('not a protocol mismatch'))).toBeNull()
 
     const connected = client(socketPath)
     await connected.connect()

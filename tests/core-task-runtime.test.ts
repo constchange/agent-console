@@ -27,6 +27,8 @@ function agent(overrides: Partial<RuntimeAgent> = {}): RuntimeAgent {
     tmuxSession: 'codex-main',
     command: 'codex',
     cwd: '/tmp/project',
+    note: '',
+    goal: '',
     matchPattern: '',
     logPath: '',
     autoStart: false,
@@ -41,6 +43,7 @@ function agent(overrides: Partial<RuntimeAgent> = {}): RuntimeAgent {
     processName: 'codex',
     processState: 'S',
     terminalOpen: true,
+    codexSession: null,
     ...overrides,
   }
 }

@@ -1,6 +1,6 @@
 # Agent Console
 
-Agent Console 是运行在 Linux Mint 上的本地 AI Team 控制中心。它不把几十个终端塞进一个窗口，而是先回答 CEO 真正关心的问题：哪些 Project 正在运行、哪些 Agent 在思考、哪些在等人、哪里出错了，以及双击后怎样立即回到正确的终端。
+Agent Console 是运行在 Linux Mint 上的本地 AI Team 控制中心。它不把几十个终端塞进一个窗口，而是先回答 CEO 真正关心的问题：哪些 Project 正在运行、哪些 Agent 在思考、哪些在等人、哪里出错了，以及怎样单击回到准确的终端窗口。
 
 ![Agent Console Project editor](docs/assets/project-edit-v031.png)
 
@@ -8,7 +8,7 @@ Agent Console 是运行在 Linux Mint 上的本地 AI Team 控制中心。它不
 
 - 新增 **Local Console Core**：它以当前 Linux 用户身份在后台运行；关闭桌面窗口后，本机扫描和精简任务状态仍会继续。服务使用 `KillMode=process`，停止或重启 Core 时不会主动向 tmux Session 与 Agent 子进程发送终止信号。
 - Core 是 `mission-control-state.json` 的唯一写入者。桌面端通过带 SHA-256 revision 的本机协议提交修改，不会在 Core 暂时离线时偷偷退回第二套写盘逻辑。
-- 生产安装包中的 Core 使用 desktop/Gateway 两个当前用户私有的 Unix Socket；目录权限 `0700`、Socket 权限 `0600`，Core 本身不监听任何 TCP 端口。协议 v2 会校验客户端预期 channel，并用互斥白名单阻止桌面调用 `remote.*`、Gateway 调用 `config.*`。
+- 生产安装包中的 Core 使用 desktop/Gateway 两个当前用户私有的 Unix Socket；目录权限 `0700`、Socket 权限 `0600`，Core 本身不监听任何 TCP 端口。协议 v5 会校验客户端预期 channel，并用互斥白名单阻止桌面调用 `remote.*`、Gateway 调用 `config.*`，同时保证桌面与 Core 对三级项目树、Agent 备注/目标和 Codex 会话摘要使用同一数据结构。
 - 首次升级会保留一份 `mission-control-state.pre-core-v0.4.json`，原有原子写入、最近有效备份和损坏文件保护继续生效。
 - 当前自动扫描写入本机 SQLite 任务账本时，只保存 Agent 名称、类型、状态和固定公开摘要，不写入终端输出、命令、工作路径、进程参数、tmux 名称或模型推理。
 - Settings 可直接查看 Core 连接、版本、协议和 Unix-only 本地模式声明；底部状态栏会显示连接、重连、离线或版本不匹配。正式安装包的 Core 零 TCP 监听与双 Socket 白名单由发布验收独立检查。
@@ -23,20 +23,22 @@ Agent Console 是运行在 Linux Mint 上的本地 AI Team 控制中心。它不
 - 默认采用象牙白、海军蓝、金色的明亮高对比主题。
 - Settings 可将整个界面字号从 5 px 调到 50 px；默认 25 px，调节时实时预览并自动保存。
 - 高分屏缩放由 Electron 原生处理，避免整页 CSS 缩放造成浮层与鼠标命中位置短暂错位。
-- 内置 16 套完整主题，包括中国青花、日本和纸、包豪斯、瑞士现代、装饰艺术、北欧峡湾、地中海、撒哈拉、波斯夜色、Solarpunk 与 Cyber Tokyo 等方向。
-- 高密度的 Project Explorer；Project 可折叠，Agent 可拖动排序或移动到其他 Project。
+- 内置 19 套完整主题，包括 VS Code 深色/浅色、纯黑白、中国青花、日本和纸、包豪斯、瑞士现代、装饰艺术、北欧峡湾、地中海、Solarpunk 与 Cyber Tokyo 等方向。
+- 左侧按“大类 → Project → Agent”三级树紧凑组织，Project 与 Agent 名称使用 1.5 倍行高；三层都可拖动排序，Project 可连同所有 Agent 跨大类移动，Agent 也可跨 Project 移动。旧配置会自动归入默认“工作区”大类。
 - Project 编辑入口始终可达：选中后左侧显示铅笔按钮，Dashboard 顶部和每个 Project 区块都有 **Edit Project**，也可双击 Project 名称编辑。
 - Project/Agent/Settings 编辑期间会暂存最新一次后台扫描，关闭编辑器后再刷新 Dashboard；编辑表单不会被实时扫描打断。
 - 删除 Agent 或空 Project 时使用应用内二段式确认，不再调用会导致 Linux/Electron 焦点异常的系统确认框。
 - 配置保存严格排队并采用原子写入；主文件损坏时优先恢复最近一次有效备份，并保留损坏文件供排查。
 - 首页显示全部 Project 和 Agent，不默认显示终端。
-- Agent 卡片显示名称、所属 Project、Terminal Title、tmux Session、PID、工作目录、CPU、Memory、运行时间、状态、更新时间和最后一句输出。
-- 自动发现当前用户的 Codex、tmux、Terminal、Python、Node、Backend、Worker 和 Docker 容器。
-- 把发现的进程加入 Project，并可人工改名、设置 Emoji 和颜色。
-- 双击 Agent：优先聚焦已有终端；仅在没有对应窗口或进程时新建。
+- Codex Agent 卡片采用固定尺寸，显示所属 Project 与名称、目标、编辑/删除、创建时间、运行文件夹、首条和最近用户命令各前 50 字、最近完成回复后 50 字、备注、当前状态与聚焦按钮；卡片网格随主面板宽度自动换列，标准宽度下每排四个。Agent 不再单独设置图标或颜色，标记色始终跟随所属 Project。
+- 每个 Agent 都可手动填写备注与目标。Codex 当前会话存在 `/goal` 时，卡片会读取真实会话目标并优先于手动目标显示；目标位于名称右侧并继承 Project 颜色。
+- Codex 当前状态读取该进程真实 session 中的 `task_started`、`task_complete` 与 `turn_aborted` 生命周期；等待模型或工具响应时即使进程瞬时 CPU 很低，也不会被误判为“空闲”。
+- 自动发现只列出尚未纳入管理的 Codex/AI CLI 进程，不再用普通终端、编辑器、后端服务或 Docker 进程淹没列表。
+- 发现界面会提取中英文特征关键词，可直接聚焦所选进程的准确窗口并在当前屏幕中央调整为宽、高各 3/5；也可多选后一次加入同一个 Project。
+- 单击左侧 Agent 名称会直接聚焦准确窗口，并在当前显示器中央调整为宽、高各占工作区 3/5；卡片底部的 **Focus** 保留普通聚焦行为。
 - 支持 GNOME Terminal、Kitty、Ghostty、Konsole、XFCE Terminal 和系统默认终端。
-- 使用 tmux 时，关闭终端窗口不会停止 Agent；再次双击会重新连接同一个 Session。
-- Restore workspace 可恢复 Project 中配置为自动启动的 Agent。
+- 使用 tmux 时，关闭终端窗口不会停止 Agent；再次点击卡片上的 **Focus** 或左侧 Agent 名称会重新连接同一个 Session。
+- Restore workspace 可恢复 Project 中配置为自动启动的 Agent；新建或导入的 Agent 默认勾选此选项。
 - 所有 Project 与 Agent 配置保存在本机，不上传服务器。
 
 ## 最省心的安装方法（Linux Mint）
@@ -99,9 +101,9 @@ npm run dev
 
 1. 点击左下角齿轮进入 **Settings → General**，选择简体中文或 English，再把字号和主题调到舒服的状态。
 2. 点击右上角 **Discover**。
-3. 找到正在运行的 Codex、Backend 或 Worker。
-4. 点击 **Add to Project**，选择 Project 并保存。
-5. 回到 Dashboard，双击 Agent 卡片即可进入对应终端。
+3. 根据进程的中英文关键词识别 Codex/AI CLI 任务；需要时点击 **Focus**，把该进程的真实终端窗口直接聚焦到屏幕中央。
+4. 勾选一个或多个进程，选择目标 Project，再点击 **Add selected**。
+5. 回到 Dashboard，点击卡片底部 **Focus**，或单击左侧 Agent 名称并将窗口居中显示。
 
 要修改 Project 名称、图标或颜色，可点击 Project 页面右上角的 **Edit Project**。左侧当前 Project 旁边也会常驻一个金色铅笔按钮。
 
@@ -111,7 +113,7 @@ npm run dev
 2. 填写名称和工作目录。
 3. 填写一个唯一的 tmux Session，例如 `product-roadmap-codex`。
 4. Launch command 填写 `codex`。
-5. 勾选 **Include in workspace restore**。
+5. **Include in workspace restore** 默认已勾选；如果不希望恢复时打开它，再手动取消。
 6. 保存后点击 Project 右侧的 **Restore**。
 
 ## 以后怎样更新
@@ -146,6 +148,8 @@ tmux Agent 的最后输出可直接读取。其他程序若要显示准确的最
 ## “不会重复打开终端”的边界
 
 Agent Console 会为每个 Agent ID 生成独立的终端窗口身份，再通过窗口 ID 精确聚焦；即使两个 Agent 的名称和可见标题相同，也不会互相串台。对于正在运行但无法准确定位窗口的 PID，它会停止操作并提示，而不会贸然重复启动一份进程。
+
+发现界面的 **Focus** 会先通过所选进程自己的 TTY 写入一次性唯一窗口身份，再按精确身份恢复、居中和激活窗口。它不会用共享的 GNOME Terminal 服务 PID 或模糊标题猜测窗口；无法建立准确关联时会明确报错，并停止操作。
 
 为了获得最稳定的体验，建议长期运行的 Agent 都使用 tmux。正式 deb 会自动安装窗口聚焦组件；从源码运行或使用 AppImage 时，需要系统已有 `wmctrl` 或 `xdotool`。
 

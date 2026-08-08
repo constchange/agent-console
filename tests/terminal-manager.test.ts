@@ -2,13 +2,14 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
+  centeredWindowBounds,
   parseWmctrlWindows,
   TerminalManager,
   terminalWindowIdentity,
   windowTitle,
   type DesktopWindowRecord,
 } from '../electron/services/terminal-manager'
-import type { AgentConfig, ConsoleSettings } from '../shared/types'
+import type { AgentConfig, ConsoleSettings, DiscoveredItem } from '../shared/types'
 
 const settings: ConsoleSettings = {
   language: 'en',
@@ -32,6 +33,8 @@ function agent(id: string, pid: number): AgentConfig {
     tmuxSession: '',
     command: '',
     cwd: '/workspace/project',
+    note: '',
+    goal: '',
     matchPattern: '',
     logPath: '',
     autoStart: false,
@@ -46,6 +49,15 @@ function wmctrlOutput(windows: DesktopWindowRecord[]): string {
 }
 
 describe('terminal window identity and focus', () => {
+  it('centers a window at exactly three fifths of the current display work area', () => {
+    expect(centeredWindowBounds({ x: -1920, y: 30, width: 1920, height: 1050 })).toEqual({
+      x: -1536,
+      y: 240,
+      width: 1152,
+      height: 630,
+    })
+  })
+
   it('gives Agents with the same visible title different stable identities', () => {
     const first = agent('agent-alpha', 1101)
     const second = agent('agent-beta', 2202)
@@ -155,6 +167,115 @@ describe('terminal window identity and focus', () => {
     })
 
     await expect(manager.listOpenAgentIds([first, second])).resolves.toEqual(new Set())
+  })
+
+  it('restores, resizes, centers, and then activates the exact Agent window', async () => {
+    const target = agent('agent-centered', 3303)
+    const title = windowTitle(target)
+    const commands: Array<{ executable: string; args: string[] }> = []
+    const manager = new TerminalManager(settings, {
+      execFile: async (executable, args) => {
+        commands.push({ executable, args })
+        if (executable === 'which') {
+          if (args[0] === 'wmctrl') return { stdout: '/usr/bin/wmctrl\n', stderr: '' }
+          throw new Error('unavailable')
+        }
+        if (executable === 'wmctrl' && args[0] === '-lp') {
+          return { stdout: `0x303 0 7003 host ${title}\n`, stderr: '' }
+        }
+        if (executable === 'wmctrl') return { stdout: '', stderr: '' }
+        throw new Error('unexpected command')
+      },
+      processAlive: () => false,
+    })
+
+    await expect(manager.open(target, { x: 384, y: 210, width: 1152, height: 630 }))
+      .resolves.toMatchObject({ ok: true, action: 'focused' })
+    expect(commands.filter(({ executable }) => executable === 'wmctrl').map(({ args }) => args)).toEqual([
+      ['-lp'],
+      ['-i', '-r', '0x303', '-b', 'remove,maximized_vert,maximized_horz'],
+      ['-i', '-r', '0x303', '-b', 'remove,fullscreen'],
+      ['-i', '-r', '0x303', '-e', '0,384,210,1152,630'],
+      ['-i', '-a', '0x303'],
+    ])
+  })
+
+  it('writes a unique identity to each discovered TTY, then centers and activates the exact window', async () => {
+    const commands: Array<{ executable: string; args: string[] }> = []
+    const item = (id: string, pid: number, name: string): DiscoveredItem => ({
+      id,
+      name,
+      suggestedName: name,
+      emoji: 'C',
+      color: '#55a6ff',
+      kind: 'codex',
+      pid,
+      ppid: 2000,
+      cpu: 0.2,
+      memory: 0.4,
+      runtimeSeconds: 90,
+      command: 'codex',
+      args: 'codex',
+      cwd: '/workspace/project',
+      tmuxSession: '',
+      terminalTitle: name,
+      lastOutput: '',
+      status: 'running',
+      keywords: ['project'],
+    })
+    const first = item('process-2201', 2201, 'Codex first')
+    const second = item('process-2202', 2202, 'Codex second')
+    const windows: DesktopWindowRecord[] = [
+      { id: '0x0000002a', pid: 2000, title: 'Codex' },
+      { id: '0x0000002b', pid: 2000, title: 'Codex' },
+    ]
+    const ttyByPid = new Map([[2201, '/dev/pts/21'], [2202, '/dev/pts/22']])
+    const windowIdByTty = new Map([['/dev/pts/21', '0x0000002a'], ['/dev/pts/22', '0x0000002b']])
+    const manager = new TerminalManager(settings, {
+      execFile: async (executable, args) => {
+        commands.push({ executable, args })
+        if (executable === 'which') {
+          if (args[0] === 'wmctrl') return { stdout: '/usr/bin/wmctrl\n', stderr: '' }
+          throw new Error('unavailable')
+        }
+        if (executable === 'wmctrl' && args[0] === '-lp') {
+          return { stdout: wmctrlOutput(windows), stderr: '' }
+        }
+        if (executable === 'wmctrl') return { stdout: '', stderr: '' }
+        throw new Error(`Unexpected command: ${executable} ${args.join(' ')}`)
+      },
+      readlink: async (target) => {
+        const pid = Number(target.match(/^\/proc\/(\d+)\/fd\/1$/)?.[1])
+        const tty = ttyByPid.get(pid)
+        if (!tty) throw new Error('Unknown process')
+        return tty
+      },
+      writeFile: async (target, data) => {
+        const windowId = windowIdByTty.get(target)
+        const title = data.match(/^\u001b]0;(.*)\u0007$/)?.[1]
+        const targetWindow = windows.find((candidate) => candidate.id === windowId)
+        if (!targetWindow || !title) throw new Error('Unknown terminal')
+        targetWindow.title = title
+      },
+      processAlive: () => true,
+      delay: async () => undefined,
+    })
+
+    const bounds = { x: 384, y: 210, width: 1152, height: 630 }
+    await expect(manager.focusDiscovered(second, bounds)).resolves.toMatchObject({ ok: true, action: 'focused' })
+    await expect(manager.focusDiscovered(first, bounds)).resolves.toMatchObject({ ok: true, action: 'focused' })
+
+    const activations = commands
+      .filter(({ executable, args }) => executable === 'wmctrl' && args[0] === '-i' && args[1] === '-a')
+      .map(({ args }) => args[2])
+    expect(activations).toEqual(['0x0000002b', '0x0000002a'])
+    const moves = commands
+      .filter(({ executable, args }) => executable === 'wmctrl' && args[0] === '-i' && args[1] === '-r' && args[3] === '-e')
+      .map(({ args }) => [args[2], args[4]])
+    expect(moves).toEqual([
+      ['0x0000002b', '0,384,210,1152,630'],
+      ['0x0000002a', '0,384,210,1152,630'],
+    ])
   })
 
   it('makes the deb package install the focus helper instead of asking the user to do it', () => {

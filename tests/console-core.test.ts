@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { ConsoleCore } from '../core/console-core'
 import { resolveCorePaths } from '../core/paths'
 import { createDefaultState, StateStore, stateRevision } from '../core/services/state-store'
-import { CORE_RPC_ERROR, type CoreBootstrapResult, type CoreConfigResult } from '../shared/core-protocol'
+import { CORE_PROTOCOL_VERSION, CORE_RPC_ERROR, type CoreBootstrapResult, type CoreConfigResult } from '../shared/core-protocol'
 import type { ConsoleState, CoreHealth } from '../shared/types'
 
 const directories: string[] = []
@@ -65,7 +65,7 @@ describe('ConsoleCore migration and ownership', () => {
       })
       await expect(core.handle('remote.health', undefined, gatewayContext)).resolves.toMatchObject({
         online: true,
-        protocolVersion: 2,
+        protocolVersion: CORE_PROTOCOL_VERSION,
       })
       await expect(core.handle('remote.settings.get', undefined, context)).resolves.toMatchObject({
         phase: 'unconfigured',

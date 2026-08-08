@@ -26,6 +26,7 @@ import type {
   CoreConnectionState,
   CoreHealth,
   Project,
+  ProjectGroup,
   TerminalApp,
   UpdateState,
 } from '../../shared/types'
@@ -36,7 +37,6 @@ import { THEMES } from '../lib/themes'
 import { Modal } from './Modal'
 import { RemoteControlSettings } from './RemoteControlSettings'
 
-const COLORS = ['#55a6ff', '#a478ff', '#54c79b', '#f6b94b', '#ef6f7a', '#8b98a9']
 const KINDS: AgentKind[] = ['codex', 'backend', 'worker', 'python', 'node', 'docker', 'tmux', 'terminal', 'process']
 const TERMINALS: TerminalApp[] = ['auto', 'ghostty', 'gnome-terminal', 'kitty', 'konsole', 'xfce4-terminal', 'x-terminal-emulator']
 const STATUSES: AgentStatus[] = ['thinking', 'running', 'waiting', 'idle', 'finished', 'error', 'stopped', 'offline']
@@ -82,27 +82,64 @@ export function DeleteConfirmation({
   )
 }
 
+interface AgentDeleteDialogProps {
+  agent: AgentConfig
+  onClose: () => void
+  onConfirm: () => void
+}
+
+export function AgentDeleteDialog({ agent, onClose, onConfirm }: AgentDeleteDialogProps) {
+  const { t } = useI18n()
+  const [deleting, setDeleting] = useState(false)
+  return (
+    <Modal
+      title={t('Delete {{name}}?', { name: agent.name })}
+      subtitle={t('Review this action before removing the Agent.')}
+      onClose={onClose}
+      size="small"
+    >
+      <div className="agent-delete-dialog">
+        <DeleteConfirmation
+          subject={t('Delete {{name}}?', { name: agent.name })}
+          detail={t('It will disappear from Agent Console, but its running process will not be stopped.')}
+          confirmLabel={t('Delete Agent')}
+          busy={deleting}
+          onCancel={onClose}
+          onConfirm={() => {
+            if (deleting) return
+            setDeleting(true)
+            onConfirm()
+          }}
+        />
+      </div>
+    </Modal>
+  )
+}
+
 export function AgentEditor({ projects, initial, existing, onSave, onDelete, onClose }: AgentEditorProps) {
   const { t } = useI18n()
   const firstProject = projects[0]
+  const initialProject = projects.find((project) => project.id === initial.projectId) ?? firstProject
   const deleteButtonRef = useRef<HTMLButtonElement>(null)
   const [deletePending, setDeletePending] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [draft, setDraft] = useState<AgentConfig>({
     id: initial.id ?? uniqueId('agent'),
-    projectId: initial.projectId ?? firstProject?.id ?? 'inbox',
+    projectId: initialProject?.id ?? 'inbox',
     name: initial.name ?? t('New Agent'),
-    emoji: initial.emoji ?? '◆',
-    color: initial.color ?? '#55a6ff',
+    emoji: '',
+    color: initialProject?.color ?? '#55a6ff',
     kind: initial.kind ?? 'codex',
-    terminalTitle: initial.terminalTitle ?? `◆ ${t('New Agent')}`,
+    terminalTitle: initial.terminalTitle ?? t('New Agent'),
     terminalApp: initial.terminalApp ?? 'auto',
     tmuxSession: initial.tmuxSession ?? '',
     command: initial.command ?? '',
     cwd: initial.cwd ?? '',
+    note: initial.note ?? '',
+    goal: initial.goal ?? '',
     matchPattern: initial.matchPattern ?? '',
     logPath: initial.logPath ?? '',
-    autoStart: initial.autoStart ?? false,
+    autoStart: initial.autoStart ?? true,
     order: initial.order ?? 0,
     pid: initial.pid ?? null,
     statusOverride: initial.statusOverride ?? null,
@@ -116,12 +153,17 @@ export function AgentEditor({ projects, initial, existing, onSave, onDelete, onC
     event.preventDefault()
     if (deletePending || !draft.name.trim() || !draft.projectId) return
     const cleanName = draft.name.trim()
+    const project = projects.find((candidate) => candidate.id === draft.projectId) ?? firstProject
     onSave({
       ...draft,
+      emoji: '',
+      color: project?.color ?? '#55a6ff',
       name: cleanName,
-      terminalTitle: draft.terminalTitle.trim() || `${draft.emoji} ${cleanName}`,
+      terminalTitle: draft.terminalTitle.trim() || cleanName,
       tmuxSession: draft.tmuxSession.replace(/[^a-zA-Z0-9_.-]/g, '-'),
       cwd: draft.cwd.trim(),
+      note: draft.note.trim(),
+      goal: draft.goal.trim(),
     })
   }
 
@@ -153,13 +195,13 @@ export function AgentEditor({ projects, initial, existing, onSave, onDelete, onC
           <div className="form-section__title"><span>01</span><div><strong>{t('Identity')}</strong><small>{t('How this Agent appears in Mission Control')}</small></div></div>
           <div className="form-grid form-grid--identity">
             <label><span>{t('Name')}</span><input required value={draft.name} onChange={(event) => update('name', event.target.value)} /></label>
-            <label><span>{t('Project')}</span><select value={draft.projectId} onChange={(event) => update('projectId', event.target.value)}>{projects.map((project) => <option key={project.id} value={project.id}>{project.emoji} {project.name}</option>)}</select></label>
-            <label><span>{t('Symbol')}</span><input className="emoji-input" value={draft.emoji} maxLength={8} onChange={(event) => update('emoji', event.target.value)} /></label>
+            <label><span>{t('Project')}</span><select value={draft.projectId} onChange={(event) => {
+              const project = projects.find((candidate) => candidate.id === event.target.value)
+              setDraft((current) => ({ ...current, projectId: event.target.value, emoji: '', color: project?.color ?? current.color }))
+            }}>{projects.map((project) => <option key={project.id} value={project.id}>{project.emoji} {project.name}</option>)}</select></label>
             <label><span>{t('Type')}</span><select value={draft.kind} onChange={(event) => update('kind', event.target.value as AgentKind)}>{KINDS.map((kind) => <option key={kind} value={kind}>{kind}</option>)}</select></label>
-          </div>
-          <div className="color-picker-row">
-            <span>{t('Color label')}</span>
-            <div>{COLORS.map((color) => <button type="button" key={color} className={draft.color === color ? 'is-selected' : ''} style={{ background: color }} onClick={() => update('color', color)} aria-label={t('Use {{color}}', { color })} />)}<input type="color" value={draft.color} onChange={(event) => update('color', event.target.value)} /></div>
+            <label className="field-span-2"><span>{t('Goal')}</span><textarea rows={2} maxLength={4000} value={draft.goal} onChange={(event) => update('goal', event.target.value)} /><small>{t('Used when this Codex session has no /goal objective. A live /goal objective takes priority automatically.')}</small></label>
+            <label className="field-span-2"><span>{t('Note')}</span><textarea rows={2} maxLength={4000} value={draft.note} onChange={(event) => update('note', event.target.value)} /><small>{t('A manual note shown on this Agent card.')}</small></label>
           </div>
         </section>
 
@@ -209,16 +251,26 @@ export function AgentEditor({ projects, initial, existing, onSave, onDelete, onC
 
 interface ProjectEditorProps {
   initial?: Project
+  groups: ProjectGroup[]
+  defaultGroupId?: string
   agentCount: number
   onSave: (project: Project) => void
   onDelete?: () => void
   onClose: () => void
 }
 
-export function ProjectEditor({ initial, agentCount, onSave, onDelete, onClose }: ProjectEditorProps) {
+export function ProjectEditor({ initial, groups, defaultGroupId, agentCount, onSave, onDelete, onClose }: ProjectEditorProps) {
   const { t } = useI18n()
   const deleteButtonRef = useRef<HTMLButtonElement>(null)
-  const [draft, setDraft] = useState<Project>(initial ?? { id: uniqueId('project'), name: t('New Project'), emoji: '◇', color: '#55a6ff', collapsed: false, order: 0 })
+  const [draft, setDraft] = useState<Project>(initial ?? {
+    id: uniqueId('project'),
+    groupId: defaultGroupId ?? groups[0]?.id ?? 'workspace',
+    name: t('New Project'),
+    emoji: '◇',
+    color: '#55a6ff',
+    collapsed: false,
+    order: 0,
+  })
   const [deletePending, setDeletePending] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const submit = (event: FormEvent) => {
@@ -242,6 +294,7 @@ export function ProjectEditor({ initial, agentCount, onSave, onDelete, onClose }
     <Modal title={initial ? t('Edit {{name}}', { name: initial.name }) : t('New Project')} subtitle={t('A Project groups related Agents, terminals, backends, and workers.')} onClose={requestClose} size="small">
       <form className="editor-form project-editor" onSubmit={submit}>
         <label><span>{t('Project name')}</span><input required value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
+        <label><span>{t('Category')}</span><select value={draft.groupId} onChange={(event) => setDraft({ ...draft, groupId: event.target.value })}>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label>
         <div className="form-grid form-grid--project">
           <label><span>{t('Symbol')}</span><input value={draft.emoji} maxLength={8} onChange={(event) => setDraft({ ...draft, emoji: event.target.value })} /></label>
           <label><span>{t('Color')}</span><input type="color" value={draft.color} onChange={(event) => setDraft({ ...draft, color: event.target.value })} /></label>
@@ -262,6 +315,65 @@ export function ProjectEditor({ initial, agentCount, onSave, onDelete, onClose }
             <>
               {initial && onDelete ? <button ref={deleteButtonRef} type="button" className="danger-button" disabled={agentCount > 0} onClick={() => setDeletePending(true)}><Trash2 size={14} /> {t('Delete Project')}</button> : <span />}
               <div><button type="button" className="action-button" onClick={onClose}>{t('Cancel')}</button><button type="submit" className="action-button action-button--primary">{t('Save Project')}</button></div>
+            </>
+          )}
+        </footer>
+      </form>
+    </Modal>
+  )
+}
+
+interface GroupEditorProps {
+  initial?: ProjectGroup
+  projectCount: number
+  onSave: (group: ProjectGroup) => void
+  onDelete?: () => void
+  onClose: () => void
+}
+
+export function GroupEditor({ initial, projectCount, onSave, onDelete, onClose }: GroupEditorProps) {
+  const { t } = useI18n()
+  const deleteButtonRef = useRef<HTMLButtonElement>(null)
+  const [draft, setDraft] = useState<ProjectGroup>(initial ?? {
+    id: uniqueId('group'),
+    name: t('New Category'),
+    collapsed: false,
+    order: 0,
+  })
+  const [deletePending, setDeletePending] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const close = () => deletePending ? setDeletePending(false) : onClose()
+  const submit = (event: FormEvent) => {
+    event.preventDefault()
+    if (!deletePending && draft.name.trim()) onSave({ ...draft, name: draft.name.trim() })
+  }
+
+  return (
+    <Modal title={initial ? t('Edit {{name}}', { name: initial.name }) : t('New Category')} subtitle={t('A category keeps related Projects together in the sidebar.')} onClose={close} size="small">
+      <form className="editor-form project-editor" onSubmit={submit}>
+        <label><span>{t('Category name')}</span><input required value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
+        {initial && projectCount > 0 && <div className="form-notice"><AlertTriangle size={15} /><span>{t('Move this category’s {{count}} Projects before deleting it.', { count: projectCount })}</span></div>}
+        <footer className="editor-actions">
+          {deletePending && onDelete ? (
+            <DeleteConfirmation
+              subject={t('Delete {{name}}?', { name: draft.name })}
+              detail={t('This removes the empty category from Agent Console.')}
+              confirmLabel={t('Delete Category')}
+              busy={deleting}
+              onCancel={() => {
+                setDeletePending(false)
+                window.requestAnimationFrame(() => deleteButtonRef.current?.focus({ preventScroll: true }))
+              }}
+              onConfirm={() => {
+                if (!onDelete || deleting) return
+                setDeleting(true)
+                onDelete()
+              }}
+            />
+          ) : (
+            <>
+              {initial && onDelete ? <button ref={deleteButtonRef} type="button" className="danger-button" disabled={projectCount > 0} onClick={() => setDeletePending(true)}><Trash2 size={14} /> {t('Delete Category')}</button> : <span />}
+              <div><button type="button" className="action-button" onClick={onClose}>{t('Cancel')}</button><button type="submit" className="action-button action-button--primary">{t('Save Category')}</button></div>
             </>
           )}
         </footer>

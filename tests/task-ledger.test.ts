@@ -27,6 +27,8 @@ function runtimeAgent(status: AgentStatus = 'running'): RuntimeAgent {
     tmuxSession: 'private-session',
     command: 'codex --token super-secret',
     cwd: '/home/user/private-project',
+    note: 'private note',
+    goal: 'private goal',
     matchPattern: 'secret-pattern',
     logPath: '/home/user/private.log',
     autoStart: true,
@@ -42,6 +44,7 @@ function runtimeAgent(status: AgentStatus = 'running'): RuntimeAgent {
     processName: 'codex',
     processState: 'S+',
     terminalOpen: true,
+    codexSession: null,
   }
 }
 

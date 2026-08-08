@@ -33,6 +33,7 @@ const discoveredProcess: DiscoveredItem = {
   terminalTitle: '⬢ Node · agent-console',
   lastOutput: 'node server.js',
   status: 'running',
+  keywords: ['server'],
 }
 
 function snapshot(includeDiscovery: boolean): RuntimeSnapshot {

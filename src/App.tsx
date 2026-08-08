@@ -22,21 +22,31 @@ import type {
   CoreHealth,
   DiscoveredItem,
   Project,
+  ProjectGroup,
   RuntimeAgent,
   RuntimeSnapshot,
   UpdateState,
 } from '../shared/types'
 import { Dashboard } from './components/Dashboard'
 import { DiscoveryDrawer } from './components/DiscoveryDrawer'
-import { AgentEditor, ProjectEditor, SettingsEditor } from './components/Editors'
+import { AgentDeleteDialog, AgentEditor, GroupEditor, ProjectEditor, SettingsEditor } from './components/Editors'
 import { Sidebar } from './components/Sidebar'
 import { getApi } from './lib/api'
 import { STATUS_META, uniqueId } from './lib/format'
 import { createI18n, detectBrowserLanguage, I18nProvider, type I18n } from './lib/i18n'
+import {
+  normalizeAgentOrders,
+  normalizeProjectOrders,
+  reorderAgents,
+  reorderGroups,
+  reorderProjects,
+} from './lib/tree-order'
 
 type EditorState =
   | { type: 'agent'; initial: Partial<AgentConfig>; existing: boolean }
-  | { type: 'project'; initial?: Project }
+  | { type: 'project'; initial?: Project; groupId?: string }
+  | { type: 'group'; initial?: ProjectGroup }
+  | { type: 'delete-agent'; agent: AgentConfig }
   | { type: 'settings' }
   | null
 
@@ -71,27 +81,30 @@ function hydrateSnapshot(state: ConsoleState, snapshot: RuntimeSnapshot, i18n: I
       processName: '',
       processState: '',
       terminalOpen: false,
+      codexSession: null,
     }
   })
   return { ...snapshot, agents }
 }
 
-function importDraft(item: DiscoveredItem, projectId: string, order: number): AgentConfig {
+function importDraft(item: DiscoveredItem, project: Project, order: number): AgentConfig {
   return {
     id: uniqueId('agent'),
-    projectId,
+    projectId: project.id,
     name: item.suggestedName,
-    emoji: item.emoji,
-    color: item.color,
+    emoji: '',
+    color: project.color,
     kind: item.kind,
     terminalTitle: item.terminalTitle,
     terminalApp: 'auto',
     tmuxSession: item.tmuxSession,
     command: '',
     cwd: item.cwd,
+    note: '',
+    goal: '',
     matchPattern: '',
     logPath: '',
-    autoStart: Boolean(item.tmuxSession),
+    autoStart: true,
     order,
     pid: item.pid,
     statusOverride: null,
@@ -114,7 +127,9 @@ export default function App() {
   const [selectedProjectId, setSelectedProjectId] = useState('all')
   const [search, setSearch] = useState('')
   const [editor, setEditor] = useState<EditorState>(null)
-  const [discoveryOpen, setDiscoveryOpen] = useState(false)
+  const [discoveryOpen, setDiscoveryOpen] = useState(() => (
+    !window.agentConsole && new URLSearchParams(window.location.search).get('preview') === 'discovery'
+  ))
   const [refreshing, setRefreshing] = useState(false)
   const [toast, setToast] = useState<ToastState | null>(null)
   const [appearancePreview, setAppearancePreview] = useState<ConsoleSettings | null>(null)
@@ -307,6 +322,10 @@ export default function App() {
   const globalWaiting = hydrated.agents.filter((agent) => agent.status === 'waiting').length
   const globalErrors = hydrated.agents.filter((agent) => agent.status === 'error').length
   const selectedProject = state.projects.find((project) => project.id === selectedProjectId)
+  const groupOrderById = new Map(state.groups.map((group) => [group.id, group.order]))
+  const orderedProjects = [...state.projects].sort((a, b) =>
+    (groupOrderById.get(a.groupId) ?? 0) - (groupOrderById.get(b.groupId) ?? 0) || a.order - b.order,
+  )
   const updateAttention = ['available', 'downloading', 'downloaded'].includes(updateState.phase)
 
   const openSettings = () => {
@@ -321,8 +340,15 @@ export default function App() {
     }))
   }
 
-  const openAgent = async (agentId: string) => {
-    const result = await api.openAgent(agentId)
+  const toggleGroup = (group: ProjectGroup) => {
+    void persist((current) => ({
+      ...current,
+      groups: current.groups.map((item) => item.id === group.id ? { ...item, collapsed: !item.collapsed } : item),
+    }))
+  }
+
+  const openAgent = async (agentId: string, centered = false) => {
+    const result = await api.openAgent(agentId, centered ? 'centered' : 'default')
     notify(localizeMessage(result.message), result.ok ? 'success' : 'error')
   }
 
@@ -382,12 +408,23 @@ export default function App() {
   const saveAgent = (agent: AgentConfig, existing: boolean) => {
     setEditor(null)
     void persist((current) => {
-      const agents = existing
-        ? current.agents.map((item) => item.id === agent.id ? agent : item)
-        : [...current.agents, {
-            ...agent,
+      const project = current.projects.find((item) => item.id === agent.projectId) ?? current.projects[0]
+      const normalized = { ...agent, emoji: '', color: project.color }
+      const previous = current.agents.find((item) => item.id === agent.id)
+      let agents: AgentConfig[]
+      if (existing && previous && previous.projectId !== normalized.projectId) {
+        const sourceProjectAgents = current.agents.map((item) => item.id === agent.id
+          ? { ...normalized, projectId: previous.projectId, order: previous.order }
+          : item)
+        agents = reorderAgents(sourceProjectAgents, current.projects, agent.id, normalized.projectId)
+      } else if (existing) {
+        agents = current.agents.map((item) => item.id === agent.id ? normalized : item)
+      } else {
+        agents = normalizeAgentOrders([...current.agents, {
+            ...normalized,
             order: current.agents.filter((item) => item.projectId === agent.projectId).length,
-          }]
+          }])
+      }
       return { ...current, agents }
     }, existing ? 'Agent updated' : 'Agent added to Mission Control')
   }
@@ -397,19 +434,45 @@ export default function App() {
     setEditor(null)
     void persist((current) => ({
       ...current,
-      agents: current.agents.filter((item) => item.id !== agentId),
+      agents: normalizeAgentOrders(current.agents.filter((item) => item.id !== agentId)),
     }), 'Agent removed')
   }
 
   const saveProject = (project: Project, existing: boolean) => {
     setEditor(null)
     setSelectedProjectId(project.id)
+    void persist((current) => {
+      const previous = current.projects.find((item) => item.id === project.id)
+      let projects: Project[]
+      if (existing && previous) {
+        const updatedInPlace = current.projects.map((item) => item.id === project.id
+          ? { ...project, groupId: previous.groupId, order: previous.order }
+          : item)
+        projects = previous.groupId === project.groupId
+          ? updatedInPlace.map((item) => item.id === project.id ? { ...item, groupId: project.groupId } : item)
+          : reorderProjects(updatedInPlace, project.id, project.groupId)
+      } else {
+        projects = normalizeProjectOrders([...current.projects, {
+          ...project,
+          order: current.projects.filter((item) => item.groupId === project.groupId).length,
+        }])
+      }
+      const color = project.color
+      const agents = current.agents.map((agent) => agent.projectId === project.id
+        ? { ...agent, emoji: '', color }
+        : agent)
+      return { ...current, projects, agents }
+    }, existing ? 'Project updated' : 'Project created')
+  }
+
+  const saveGroup = (group: ProjectGroup, existing: boolean) => {
+    setEditor(null)
     void persist((current) => ({
       ...current,
-      projects: existing
-        ? current.projects.map((item) => item.id === project.id ? project : item)
-        : [...current.projects, { ...project, order: current.projects.length }],
-    }), existing ? 'Project updated' : 'Project created')
+      groups: existing
+        ? current.groups.map((item) => item.id === group.id ? group : item)
+        : [...current.groups, { ...group, order: current.groups.length }],
+    }), existing ? 'Category updated' : 'Category created')
   }
 
   const deleteProject = (projectId: string) => {
@@ -420,35 +483,54 @@ export default function App() {
     setSelectedProjectId('all')
     void persist((latest) => ({
       ...latest,
-      projects: latest.projects.filter((item) => item.id !== projectId),
+      projects: normalizeProjectOrders(latest.projects.filter((item) => item.id !== projectId)),
     }), 'Project deleted')
   }
 
-  const reorderAgent = (sourceId: string, targetProjectId: string, targetAgentId?: string) => {
-    void persist((current) => {
-      const source = current.agents.find((agent) => agent.id === sourceId)
-      if (!source) return current
-      const otherAgents = current.agents.filter((agent) => agent.id !== sourceId)
-      const targetAgents = otherAgents.filter((agent) => agent.projectId === targetProjectId).sort((a, b) => a.order - b.order)
-      const insertionIndex = targetAgentId ? Math.max(0, targetAgents.findIndex((agent) => agent.id === targetAgentId)) : targetAgents.length
-      targetAgents.splice(insertionIndex, 0, { ...source, projectId: targetProjectId })
-      const orderById = new Map(targetAgents.map((agent, index) => [agent.id, index]))
-      const moved = { ...source, projectId: targetProjectId, order: orderById.get(source.id) ?? 0 }
-      const agents = otherAgents.map((agent) =>
-        agent.projectId === targetProjectId ? { ...agent, order: orderById.get(agent.id) ?? agent.order } : agent,
-      )
-      agents.push(moved)
-      return { ...current, agents }
-    })
+  const deleteGroup = (groupId: string) => {
+    const current = stateRef.current
+    if (!current || current.projects.some((project) => project.groupId === groupId)) return
+    if (!current.groups.some((group) => group.id === groupId) || current.groups.length <= 1) return
+    setEditor(null)
+    void persist((latest) => ({
+      ...latest,
+      groups: latest.groups.filter((group) => group.id !== groupId).map((group, order) => ({ ...group, order })),
+    }), 'Category deleted')
   }
 
-  const handleImport = (item: DiscoveredItem) => {
-    const projectId = selectedProjectId !== 'all' && state.projects.some((project) => project.id === selectedProjectId)
-      ? selectedProjectId
-      : state.projects[0].id
-    const order = state.agents.filter((agent) => agent.projectId === projectId).length
+  const reorderGroup = (sourceId: string, targetId?: string) => {
+    void persist((current) => ({ ...current, groups: reorderGroups(current.groups, sourceId, targetId) }))
+  }
+
+  const reorderProject = (sourceId: string, targetGroupId: string, targetProjectId?: string) => {
+    void persist((current) => ({
+      ...current,
+      projects: reorderProjects(current.projects, sourceId, targetGroupId, targetProjectId),
+    }))
+  }
+
+  const reorderAgent = (sourceId: string, targetProjectId: string, targetAgentId?: string) => {
+    void persist((current) => ({
+      ...current,
+      agents: reorderAgents(current.agents, current.projects, sourceId, targetProjectId, targetAgentId),
+    }))
+  }
+
+  const handleImport = (items: DiscoveredItem[], projectId: string) => {
+    if (items.length === 0 || !state.projects.some((project) => project.id === projectId)) return
     setDiscoveryOpen(false)
-    setEditor({ type: 'agent', initial: importDraft(item, projectId, order), existing: false })
+    void persist((current) => {
+      const project = current.projects.find((candidate) => candidate.id === projectId)
+      if (!project) return current
+      const startOrder = current.agents.filter((agent) => agent.projectId === projectId).length
+      return {
+        ...current,
+        agents: normalizeAgentOrders([
+          ...current.agents,
+          ...items.map((item, index) => importDraft(item, project, startOrder + index)),
+        ]),
+      }
+    }, items.length === 1 ? 'Agent added to Mission Control' : 'Agents added to Mission Control')
   }
 
   const editAgent = (agent: AgentConfig) => setEditor({ type: 'agent', initial: agent, existing: true })
@@ -473,12 +555,17 @@ export default function App() {
         search={search}
         onSearch={setSearch}
         onSelectProject={setSelectedProjectId}
+        onToggleGroup={toggleGroup}
         onToggleProject={toggleProject}
-        onAddProject={() => setEditor({ type: 'project' })}
+        onAddGroup={() => setEditor({ type: 'group' })}
+        onEditGroup={(group) => setEditor({ type: 'group', initial: group })}
+        onAddProject={(groupId) => setEditor({ type: 'project', groupId })}
         onEditProject={(project) => setEditor({ type: 'project', initial: project })}
         onAddAgent={(projectId) => setEditor({ type: 'agent', initial: { projectId }, existing: false })}
         onEditAgent={editAgent}
-        onOpenAgent={(id) => void openAgent(id)}
+        onOpenAgent={(id) => void openAgent(id, true)}
+        onReorderGroup={reorderGroup}
+        onReorderProject={reorderProject}
         onReorderAgent={reorderAgent}
         onOpenSettings={openSettings}
       />
@@ -513,6 +600,7 @@ export default function App() {
           onOpenAgent={(id) => void openAgent(id)}
           onCloseTerminal={(id) => void closeAgentTerminal(id)}
           onEditAgent={editAgent}
+          onDeleteAgent={(agent) => setEditor({ type: 'delete-agent', agent })}
           onEditProject={(project) => setEditor({ type: 'project', initial: project })}
           onAddAgent={(projectId) => setEditor({ type: 'agent', initial: { projectId }, existing: false })}
           onRestoreProject={(projectId) => void restoreProject(projectId)}
@@ -534,12 +622,28 @@ export default function App() {
         </footer>
       </div>
 
-      <DiscoveryDrawer open={discoveryOpen} snapshot={hydrated} onClose={() => setDiscoveryOpen(false)} onRefresh={() => void refresh()} onImport={handleImport} />
+      <DiscoveryDrawer
+        open={discoveryOpen}
+        snapshot={hydrated}
+        projects={orderedProjects}
+        initialProjectId={selectedProjectId !== 'all' ? selectedProjectId : orderedProjects[0].id}
+        onClose={() => setDiscoveryOpen(false)}
+        onRefresh={() => void refresh()}
+        onImport={handleImport}
+        onFocus={async (discoveredId) => {
+          try {
+            const result = await api.focusDiscoveredProcess(discoveredId)
+            notify(i18n.message(result.message), result.ok ? 'success' : 'error')
+          } catch (error) {
+            notify(error instanceof Error ? error.message : String(error), 'error')
+          }
+        }}
+      />
 
       {editor?.type === 'agent' && (
         <AgentEditor
           key={`${editor.existing}-${editor.initial.id ?? 'new'}`}
-          projects={[...state.projects].sort((a, b) => a.order - b.order)}
+          projects={orderedProjects}
           initial={editor.initial}
           existing={editor.existing}
           onSave={(agent) => saveAgent(agent, editor.existing)}
@@ -547,13 +651,32 @@ export default function App() {
           onClose={() => setEditor(null)}
         />
       )}
+      {editor?.type === 'delete-agent' && (
+        <AgentDeleteDialog
+          agent={editor.agent}
+          onClose={() => setEditor(null)}
+          onConfirm={() => deleteAgent(editor.agent.id)}
+        />
+      )}
       {editor?.type === 'project' && (
         <ProjectEditor
           key={editor.initial?.id ?? 'new-project'}
           initial={editor.initial}
+          groups={[...state.groups].sort((a, b) => a.order - b.order)}
+          defaultGroupId={editor.groupId}
           agentCount={editor.initial ? state.agents.filter((agent) => agent.projectId === editor.initial!.id).length : 0}
           onSave={(project) => saveProject(project, Boolean(editor.initial))}
           onDelete={editor.initial ? () => deleteProject(editor.initial!.id) : undefined}
+          onClose={() => setEditor(null)}
+        />
+      )}
+      {editor?.type === 'group' && (
+        <GroupEditor
+          key={editor.initial?.id ?? 'new-group'}
+          initial={editor.initial}
+          projectCount={editor.initial ? state.projects.filter((project) => project.groupId === editor.initial!.id).length : 0}
+          onSave={(group) => saveGroup(group, Boolean(editor.initial))}
+          onDelete={editor.initial && state.groups.length > 1 ? () => deleteGroup(editor.initial!.id) : undefined}
           onClose={() => setEditor(null)}
         />
       )}

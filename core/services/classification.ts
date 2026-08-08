@@ -10,9 +10,21 @@ const TERMINAL_COMMANDS = [
   'xterm',
 ]
 
-export function classifyProcess(command: string, args: string): AgentKind | null {
+const SHELL_COMMANDS = [
+  'bash',
+  'zsh',
+  'fish',
+  'sh',
+  'dash',
+  'ksh',
+  'nu',
+  'pwsh',
+]
+
+export function classifyProcess(command: string, args: string, tty = ''): AgentKind | null {
   const comm = command.toLowerCase()
   const line = `${command} ${args}`.toLowerCase()
+  const interactiveTerminal = Boolean(tty && tty !== '?' && tty !== '-')
 
   if (line.includes('agent-console') || line.includes('agent console')) return null
   if (TERMINAL_COMMANDS.some((terminal) => comm === terminal || comm.endsWith(`/${terminal}`))) {
@@ -27,6 +39,13 @@ export function classifyProcess(command: string, args: string): AgentKind | null
   if (comm === 'tmux' || line.startsWith('tmux ')) return 'tmux'
   if (/^python([0-9.]*)?$/.test(comm)) return 'python'
   if (comm === 'node' || comm === 'nodejs' || comm === 'bun' || comm === 'deno') return 'node'
+  if (interactiveTerminal && SHELL_COMMANDS.some((shell) => comm === shell || comm.endsWith(`/${shell}`))) {
+    return 'terminal'
+  }
+  // A terminal can host editors, build tools, database clients, SSH sessions, and
+  // other useful work that is not an AI CLI. Keep those foreground processes
+  // discoverable instead of silently dropping every unrecognised command.
+  if (interactiveTerminal) return 'process'
   return null
 }
 
@@ -36,6 +55,7 @@ export function inferStatus(
   kind: AgentKind,
   statusOverride?: AgentStatus | null,
   activityAt = 0,
+  codexTaskActive: boolean | null = null,
 ): AgentStatus {
   if (statusOverride) return statusOverride
   if (!processInfo) return 'offline'
@@ -58,6 +78,13 @@ export function inferStatus(
   if (/\b(thinking|reasoning|analyzing|working|exploring|searching|generating)\b|正在(?:思考|推理|分析|工作|探索|搜索|查找|生成|检查|读取|修改|构建|测试)/.test(tail)) {
     return 'thinking'
   }
+
+  // Codex frequently sleeps while waiting for model responses, subprocesses,
+  // or tool output. Its instantaneous CPU and Linux process state therefore do
+  // not say whether a turn is running. Prefer the structured task lifecycle
+  // written to the exact JSONL session held open by this Codex process.
+  if (kind === 'codex' && codexTaskActive === true) return 'running'
+
   const negatesCompletion = /(?:尚未|还未|并未|并非|不是|未能|没有)(?:做到|达到)?全部(?:检查|测试)?通过/.test(tail)
   if (!negatesCompletion && /\b(task )?(finished|completed successfully)\b|(?:任务|工作|操作|构建|测试)(?:已完成|成功完成)|全部(?:检查|测试)?通过/.test(tail)) return 'finished'
 
